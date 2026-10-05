@@ -33,44 +33,47 @@
      */
     hookPlupload: function() {
       const self = this;
-      $(document).on('uploaderReady', function() {
+      if (this._pluploadHooked) return;
+      this._pluploadHooked = true;
+
+      const patchUploader = function() {
         if (typeof wp !== 'undefined' && wp.Uploader && wp.Uploader.prototype) {
+          if (wp.Uploader._r2g_patched) return;
+          wp.Uploader._r2g_patched = true;
+
           const originalInit = wp.Uploader.prototype.init;
           wp.Uploader.prototype.init = function() {
             originalInit.apply(this, arguments);
             const uploader = this.uploader;
-            if (!uploader) return;
+            if (!uploader || uploader._r2g_bound) return;
+            uploader._r2g_bound = true;
 
             uploader.bind('FilesAdded', function(up, files) {
               // Pause uploader queue while compressing
               up.stop();
-              self.processQueue(files, function() {
+              self.processQueue(up, files, function() {
                 up.start();
               });
             });
           };
         }
-      });
+      };
+
+      patchUploader();
+      $(document).on('uploaderReady', patchUploader);
     },
 
     /**
      * Intercept Gutenberg Block Editor file drops/uploads
      */
     hookGutenberg: function() {
-      // Gutenberg drop interception via input[type="file"]
-      const self = this;
-      document.addEventListener('change', function(e) {
-        const target = e.target;
-        if (target && target.tagName === 'INPUT' && target.type === 'file' && target.files && target.files.length) {
-          // Handled via standard file input if plupload is not active
-        }
-      }, true);
+      // Intentionally passive to avoid conflicting with Gutenberg's native apiFetch media handlers
     },
 
     /**
      * Process list of selected files
      */
-    processQueue: function(files, onComplete) {
+    processQueue: function(up, files, onComplete) {
       const self = this;
       const imageFiles = files.filter(f => f.type && f.type.startsWith('image/') && !f.type.includes('svg'));
 
@@ -79,13 +82,21 @@
         return;
       }
 
+      const onCancel = function() {
+        // Abort upload and remove files from queue so they NEVER upload as -1, -2 duplicates
+        imageFiles.forEach(f => {
+          if (up && up.removeFile) up.removeFile(f);
+        });
+        self.hideModal();
+      };
+
       if (this.config.promptConfirm) {
         this.showConfirmModal(imageFiles, function(chosenFormat, chosenQuality, chosenMaxWidth) {
           self.compressFiles(imageFiles, chosenFormat, chosenQuality, chosenMaxWidth, onComplete);
         }, function() {
           // User chose "Do not compress" -> upload raw
           onComplete();
-        });
+        }, onCancel);
       } else {
         self.compressFiles(imageFiles, self.config.format, self.config.quality, self.config.maxWidth, onComplete);
       }
@@ -216,6 +227,7 @@
               </div>
             </div>
             <div class="r2g-modal-footer">
+              <button type="button" id="r2g-modal-cancel" class="button" style="color:#d63638;">Cancel</button>
               <button type="button" id="r2g-modal-skip" class="button">Upload Without Compressing</button>
               <button type="button" id="r2g-modal-proceed" class="button button-primary">Compress & Upload</button>
             </div>
@@ -230,7 +242,7 @@
       });
     },
 
-    showConfirmModal: function(files, onProceed, onSkip) {
+    showConfirmModal: function(files, onProceed, onSkip, onCancel) {
       const modal = $('#r2g-confirm-modal');
       modal.fadeIn(150);
 
@@ -244,6 +256,11 @@
       $('#r2g-modal-skip').off('click').on('click', function() {
         modal.hide();
         onSkip();
+      });
+
+      $('#r2g-modal-cancel').off('click').on('click', function() {
+        modal.hide();
+        if (typeof onCancel === 'function') onCancel();
       });
     },
 

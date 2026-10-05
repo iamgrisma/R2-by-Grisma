@@ -141,7 +141,7 @@ class R2G_Media_Handler {
 
         // 2. Upload to Cloudflare R2 if auto-upload is enabled
         if ($auto_upload) {
-            self::sync_attachment_to_r2($attachment_id);
+            self::sync_attachment_to_r2($attachment_id, false, $metadata);
         }
 
         // 3. If async reSmush is enabled, enqueue background optimization job
@@ -157,9 +157,10 @@ class R2G_Media_Handler {
      *
      * @param int $attachment_id
      * @param bool $force_reupload
+     * @param array|null $metadata
      * @return bool
      */
-    public static function sync_attachment_to_r2($attachment_id, $force_reupload = false) {
+    public static function sync_attachment_to_r2($attachment_id, $force_reupload = false, $metadata = null) {
         $client = r2_by_grisma()->get_client();
         if (!$client || !$client->is_configured()) {
             return false;
@@ -192,7 +193,9 @@ class R2G_Media_Handler {
         $upload_sizes_mode = get_option('r2g_upload_sizes', 'all');
 
         if ($upload_sizes_mode === 'all') {
-            $metadata = wp_get_attachment_metadata($attachment_id);
+            if (empty($metadata)) {
+                $metadata = wp_get_attachment_metadata($attachment_id);
+            }
             $dir = dirname($file_path);
 
             if (!empty($metadata['sizes']) && is_array($metadata['sizes'])) {
@@ -200,7 +203,8 @@ class R2G_Media_Handler {
                     $thumb_path = $dir . '/' . $size_info['file'];
                     if (file_exists($thumb_path)) {
                         $thumb_r2_key = self::get_r2_key_from_path($thumb_path);
-                        $put_thumb = $client->put_object($thumb_path, $thumb_r2_key, $size_info['mime-type'] ?? null);
+                        $mime = isset($size_info['mime-type']) ? $size_info['mime-type'] : null;
+                        $put_thumb = $client->put_object($thumb_path, $thumb_r2_key, $mime);
                         if ($put_thumb['success']) {
                             $uploaded_keys[] = $thumb_r2_key;
                             $thumb_count++;
@@ -225,7 +229,9 @@ class R2G_Media_Handler {
         // Handle "R2 Only" storage mode: remove local copies to save disk space
         $storage_mode = get_option('r2g_storage_mode', 'both');
         if ($storage_mode === 'r2_only') {
-            $metadata = wp_get_attachment_metadata($attachment_id);
+            if (empty($metadata)) {
+                $metadata = wp_get_attachment_metadata($attachment_id);
+            }
             self::delete_local_files($attachment_id, $file_path, $metadata);
         }
 

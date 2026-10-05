@@ -205,19 +205,29 @@ class R2G_URL_Rewriter {
         $height = 0;
         $is_intermediate = false;
 
-        if (is_string($size) && !empty($meta['sizes'][$size])) {
+        $upload_sizes_mode = get_option('r2g_upload_sizes', 'all');
+        $uploaded_keys = get_post_meta($id, '_r2g_keys', true);
+        $has_uploaded_thumbs = is_array($uploaded_keys) && count($uploaded_keys) > 1;
+
+        if ($upload_sizes_mode === 'all' && $has_uploaded_thumbs && is_string($size) && !empty($meta['sizes'][$size]['file'])) {
             $data = $meta['sizes'][$size];
             $img_url = path_join(dirname($img_url), $data['file']);
-            $width = $data['width'] ?? 0;
-            $height = $data['height'] ?? 0;
+            $width = isset($data['width']) ? $data['width'] : 0;
+            $height = isset($data['height']) ? $data['height'] : 0;
+            $is_intermediate = true;
+        } elseif (is_string($size) && !empty($meta['sizes'][$size])) {
+            // Thumbnails were not uploaded to R2 (or original-only mode): serve main CDN image with requested dimensions so it never 404s
+            $data = $meta['sizes'][$size];
+            $width = isset($data['width']) ? $data['width'] : 0;
+            $height = isset($data['height']) ? $data['height'] : 0;
             $is_intermediate = true;
         } elseif (is_array($size)) {
-            $width = $size[0] ?? 0;
-            $height = $size[1] ?? 0;
+            $width = isset($size[0]) ? $size[0] : 0;
+            $height = isset($size[1]) ? $size[1] : 0;
             $is_intermediate = true;
         } else {
-            $width = $meta['width'] ?? 0;
-            $height = $meta['height'] ?? 0;
+            $width = isset($meta['width']) ? $meta['width'] : 0;
+            $height = isset($meta['height']) ? $meta['height'] : 0;
         }
 
         $cdn_url = $this->rewrite_url($img_url);
@@ -269,6 +279,14 @@ class R2G_URL_Rewriter {
             return $sources;
         }
 
+        $uploaded_keys = get_post_meta($attachment_id, '_r2g_keys', true);
+        $has_uploaded_thumbs = is_array($uploaded_keys) && count($uploaded_keys) > 1;
+
+        if (!$has_uploaded_thumbs) {
+            // Do not output srcset pointing to non-existent thumb sizes on R2
+            return array();
+        }
+
         foreach ($sources as $width => &$data) {
             if (!empty($data['url'])) {
                 $data['url'] = $this->rewrite_url($data['url']);
@@ -299,10 +317,19 @@ class R2G_URL_Rewriter {
             $response['icon'] = $this->rewrite_url($response['icon']);
         }
 
+        $upload_sizes_mode = get_option('r2g_upload_sizes', 'all');
+        $uploaded_keys = get_post_meta($attachment->ID, '_r2g_keys', true);
+        $has_uploaded_thumbs = is_array($uploaded_keys) && count($uploaded_keys) > 1;
+
         if (!empty($response['sizes']) && is_array($response['sizes'])) {
             foreach ($response['sizes'] as &$s) {
                 if (!empty($s['url'])) {
-                    $s['url'] = $this->rewrite_url($s['url']);
+                    if ($upload_sizes_mode === 'all' && $has_uploaded_thumbs) {
+                        $s['url'] = $this->rewrite_url($s['url']);
+                    } else {
+                        // Point to the known full CDN URL so Gutenberg and modal thumbnails never 404
+                        $s['url'] = $response['url'];
+                    }
                 }
             }
         }
@@ -325,10 +352,18 @@ class R2G_URL_Rewriter {
             $data['source_url'] = $this->rewrite_url($data['source_url']);
         }
 
+        $upload_sizes_mode = get_option('r2g_upload_sizes', 'all');
+        $uploaded_keys = get_post_meta($post->ID, '_r2g_keys', true);
+        $has_uploaded_thumbs = is_array($uploaded_keys) && count($uploaded_keys) > 1;
+
         if (!empty($data['media_details']['sizes']) && is_array($data['media_details']['sizes'])) {
             foreach ($data['media_details']['sizes'] as $s => &$info) {
                 if (!empty($info['source_url'])) {
-                    $info['source_url'] = $this->rewrite_url($info['source_url']);
+                    if ($upload_sizes_mode === 'all' && $has_uploaded_thumbs) {
+                        $info['source_url'] = $this->rewrite_url($info['source_url']);
+                    } else {
+                        $info['source_url'] = $data['source_url'];
+                    }
                 }
             }
         }
