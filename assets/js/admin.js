@@ -248,19 +248,12 @@
     let syncCancelled = false;
 
     // Live batch option changes for Bulk Sync
-    $('#r2g-sync-preset').on('change', function() {
-      const p = $(this).val();
-      if (p === 'keep_current' || p === 'none') {
+    $('#r2g-sync-format').on('change', function() {
+      const f = $(this).val();
+      if (f === 'keep' || f === 'none') {
         $('#r2g-sync-quality-wrap').hide();
       } else {
         $('#r2g-sync-quality-wrap').show();
-        if (p === 'webp_high' || p === 'jpeg_high') {
-          $('#r2g-sync-quality-slider').val(90);
-          $('#r2g-sync-quality-val').text('90%');
-        } else if (p === 'webp_balanced' || p === 'jpeg_balanced') {
-          $('#r2g-sync-quality-slider').val(82);
-          $('#r2g-sync-quality-val').text('82%');
-        }
       }
     });
 
@@ -298,7 +291,7 @@
       const $progText = $('#r2g-sync-status-text');
       const $progPct = $('#r2g-sync-percentage');
 
-      const syncPreset = $('#r2g-sync-preset').val() || 'keep_current';
+      const syncFormat = $('#r2g-sync-format').val() || 'keep';
       const syncQuality = parseInt($('#r2g-sync-quality-slider').val(), 10) || 82;
       const syncEngine = $('#r2g-sync-engine').val() || 'server';
 
@@ -319,7 +312,7 @@
           data: {
             action: 'r2g_bulk_sync_batch',
             batch_size: 5,
-            preset: syncPreset,
+            format: syncFormat,
             quality: syncQuality,
             engine: syncEngine,
             nonce: nonce,
@@ -546,54 +539,12 @@
       });
     });
 
-    // 8. Preset Dropdown Change & Slider Sync in Settings Tab
-    $('#r2g_active_preset').on('change', function() {
-      const presetKey = $(this).val();
-      const presets = window.r2g_compress_config?.presets || {};
-      if (presets[presetKey]) {
-        const p = presets[presetKey];
-        $('input[name="r2g_compress_format"][value="' + p.format + '"]').prop('checked', true);
-        $('#r2g_compress_enabled').prop('checked', p.compress == 1);
-        $('#r2g_compress_quality').val(p.quality);
-        $('#r2g_compress_quality_slider').val(p.quality);
-        $('#r2g_max_width').val(p.max_width);
-        $('#r2g-preset-desc').text(p.description);
-      }
-    });
-
-    $('input[name="r2g_compress_format"]').on('change', function() {
-      const fmt = $(this).val();
-      const currentQuality = parseInt($('#r2g_compress_quality').val(), 10);
-      let matched = 'custom';
-      const presets = window.r2g_compress_config?.presets || {};
-      for (const [key, p] of Object.entries(presets)) {
-        if (key === 'custom') continue;
-        if (p.format === fmt && parseInt(p.quality, 10) === currentQuality) {
-          matched = key;
-          break;
-        }
-      }
-      if (matched === 'custom') {
-        if (fmt === 'webp') matched = 'webp_balanced';
-        else if (fmt === 'jpg') matched = 'jpeg_balanced';
-        else if (fmt === 'original') matched = 'original_compressed';
-      }
-      $('#r2g_active_preset').val(matched);
-      if (presets[matched]) {
-        $('#r2g-preset-desc').text(presets[matched].description || '');
-      }
-    });
-
-    // Quality slider and number input 2-way sync
+    // 8. Quality slider and number input 2-way sync
     $('#r2g_compress_quality_slider').on('input', function() {
-      const val = $(this).val();
-      $('#r2g_compress_quality').val(val);
-      $('#r2g_active_preset').val('custom');
+      $('#r2g_compress_quality').val($(this).val());
     });
     $('#r2g_compress_quality').on('input', function() {
-      const val = $(this).val();
-      $('#r2g_compress_quality_slider').val(val);
-      $('#r2g_active_preset').val('custom');
+      $('#r2g_compress_quality_slider').val($(this).val());
     });
 
     // 9. Thumbnail Auto-healing: Fallback from broken thumbnail size to full CDN image

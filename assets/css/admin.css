@@ -648,11 +648,15 @@ table.media td.thumbnail img {
   backdrop-filter: blur(4px) !important;
   -webkit-backdrop-filter: blur(4px) !important;
   z-index: 160000 !important;
-  display: flex !important;
+  display: none !important;
   align-items: center !important;
   justify-content: center !important;
   padding: 16px !important;
   box-sizing: border-box !important;
+}
+
+.r2g-modal-overlay.r2g-modal-active {
+  display: flex !important;
 }
 
 .r2g-modal-card {

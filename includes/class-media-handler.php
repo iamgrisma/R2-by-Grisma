@@ -258,35 +258,19 @@ class R2G_Media_Handler {
      */
     public static function get_effective_upload_options() {
         $presets = self::get_presets();
-        $preset_key = '';
 
-        if (!empty($_POST['r2g_preset'])) {
-            $preset_key = sanitize_text_field(wp_unslash($_POST['r2g_preset']));
-        } elseif (!empty($_SERVER['HTTP_X_R2G_PRESET'])) {
-            $preset_key = sanitize_text_field(wp_unslash($_SERVER['HTTP_X_R2G_PRESET']));
-        } elseif (!empty($_COOKIE['r2g_preset'])) {
-            $preset_key = sanitize_text_field(wp_unslash($_COOKIE['r2g_preset']));
-        }
-
-        if (empty($preset_key) || !isset($presets[$preset_key])) {
-            $preset_key = get_option('r2g_active_preset', 'webp_balanced');
-            if (!isset($presets[$preset_key])) {
-                $preset_key = 'webp_balanced';
-            }
-        }
-
-        $preset_def = $presets[$preset_key];
-
-        // Format resolution:
+        // 1. Format resolution: POST -> HTTP Header -> Cookie -> Preset fallback -> Site Default Option
         $format = '';
         if (!empty($_POST['r2g_format'])) {
             $format = sanitize_text_field(wp_unslash($_POST['r2g_format']));
         } elseif (!empty($_SERVER['HTTP_X_R2G_FORMAT'])) {
             $format = sanitize_text_field(wp_unslash($_SERVER['HTTP_X_R2G_FORMAT']));
-        } elseif ($preset_key === 'custom' && !empty($_COOKIE['r2g_format'])) {
+        } elseif (!empty($_COOKIE['r2g_format'])) {
             $format = sanitize_text_field(wp_unslash($_COOKIE['r2g_format']));
+        } elseif (!empty($_POST['r2g_preset']) && isset($presets[$_POST['r2g_preset']])) {
+            $format = $presets[$_POST['r2g_preset']]['format'];
         } else {
-            $format = $preset_def['format'];
+            $format = get_option('r2g_compress_format', 'webp');
         }
 
         $format = strtolower($format);
@@ -294,36 +278,44 @@ class R2G_Media_Handler {
             $format = 'jpg';
         }
 
-        // Quality resolution:
-        $quality = 82;
+        // 2. Quality resolution: POST -> HTTP Header -> Cookie -> Preset fallback -> Site Default Option
+        $quality = 0;
         if (isset($_POST['r2g_quality']) && $_POST['r2g_quality'] !== '') {
             $quality = (int)$_POST['r2g_quality'];
         } elseif (isset($_SERVER['HTTP_X_R2G_QUALITY']) && $_SERVER['HTTP_X_R2G_QUALITY'] !== '') {
             $quality = (int)$_SERVER['HTTP_X_R2G_QUALITY'];
-        } elseif ($preset_key === 'custom' && isset($_COOKIE['r2g_quality']) && $_COOKIE['r2g_quality'] !== '') {
+        } elseif (isset($_COOKIE['r2g_quality']) && $_COOKIE['r2g_quality'] !== '') {
             $quality = (int)$_COOKIE['r2g_quality'];
+        } elseif (!empty($_POST['r2g_preset']) && isset($presets[$_POST['r2g_preset']])) {
+            $quality = (int)$presets[$_POST['r2g_preset']]['quality'];
         } else {
-            $quality = (int)$preset_def['quality'];
+            $quality = (int) get_option('r2g_compress_quality', 82);
         }
         $quality = max(50, min(100, $quality));
 
-        // Compress resolution:
-        $compress = $preset_def['compress'];
+        // 3. Compress resolution:
         if (isset($_POST['r2g_compress']) && $_POST['r2g_compress'] !== '') {
             $compress = (int)$_POST['r2g_compress'];
         } elseif (isset($_SERVER['HTTP_X_R2G_COMPRESS']) && $_SERVER['HTTP_X_R2G_COMPRESS'] !== '') {
             $compress = (int)$_SERVER['HTTP_X_R2G_COMPRESS'];
+        } elseif (isset($_COOKIE['r2g_compress']) && $_COOKIE['r2g_compress'] !== '') {
+            $compress = (int)$_COOKIE['r2g_compress'];
+        } else {
+            $compress = (int) get_option('r2g_compress_enabled', 1);
         }
 
-        // Max width resolution:
-        $max_width = $preset_def['max_width'];
+        // 4. Max width resolution:
         if (isset($_POST['r2g_max_width']) && $_POST['r2g_max_width'] !== '') {
             $max_width = (int)$_POST['r2g_max_width'];
         } elseif (isset($_SERVER['HTTP_X_R2G_MAX_WIDTH']) && $_SERVER['HTTP_X_R2G_MAX_WIDTH'] !== '') {
             $max_width = (int)$_SERVER['HTTP_X_R2G_MAX_WIDTH'];
+        } elseif (isset($_COOKIE['r2g_max_width']) && $_COOKIE['r2g_max_width'] !== '') {
+            $max_width = (int)$_COOKIE['r2g_max_width'];
+        } else {
+            $max_width = (int) get_option('r2g_max_width', 1920);
         }
 
-        // Engine resolution:
+        // 5. Engine resolution:
         $engine = '';
         if (!empty($_POST['r2g_engine'])) {
             $engine = sanitize_text_field(wp_unslash($_POST['r2g_engine']));
@@ -338,7 +330,13 @@ class R2G_Media_Handler {
             $engine = 'server';
         }
 
-        // Storage Mode resolution:
+        // If raw lossless engine selected, disable lossy transforms
+        if ($engine === 'none') {
+            $compress = 0;
+            $format = 'original';
+        }
+
+        // 6. Storage Mode resolution:
         $storage_mode = '';
         if (!empty($_POST['r2g_storage_mode'])) {
             $storage_mode = sanitize_text_field(wp_unslash($_POST['r2g_storage_mode']));
@@ -357,7 +355,6 @@ class R2G_Media_Handler {
         $client_compressed = !empty($_POST['r2g_client_compressed']) || !empty($_SERVER['HTTP_X_R2G_CLIENT_COMPRESSED']);
 
         return array(
-            'preset'            => $preset_key,
             'format'            => $format,
             'quality'           => $quality,
             'compress'          => (bool)$compress,

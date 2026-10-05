@@ -4,7 +4,7 @@ Tags: r2, cloudflare, cloudflare r2, image optimization, webp, s3, offload media
 Requires at least: 5.8
 Tested up to: 6.7
 Requires PHP: 7.4
-Stable tag: 1.0.14
+Stable tag: 1.0.15
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -32,6 +32,13 @@ Enterprise Cloudflare R2 sync with upload-time format & compression controls, se
 4. Click **Test Connection & Verify CDN** to confirm connection.
 
 == Changelog ==
+
+= 1.0.15 =
+* Fixed unwanted popup modal on page load: rectified modal CSS display rules and Plupload bindings so the modal never displays automatically upon navigating to the dashboard or Media Library.
+* Fixed unclosable modal: Cancel button, "X" close icon, Escape key, and backdrop click now cleanly dismiss the dialog and cancel pending uploads.
+* Completely eliminated conflicting "Preset" vs "Format" duality: removed redundant preset dropdown from Settings tab, Bulk Sync, and Upload controls. Direct selection of Target Format (WebP, JPG, PNG, Original) and Quality slider (50%–100%) now directly dictate compression without forceful WebP overrides.
+* Defaulted upload workflow to interactive dropzone toolbar: non-intrusive toolbar placed above the upload dropzone allows adjusting format and quality directly on-screen without requiring a popup dialog.
+* Streamlined Bulk Sync engine: batch processing now accepts Target Format and Quality directly with backward compatibility.
 
 = 1.0.14 =
 * Added Visual Browser Upload Interceptor Modal: Pauses image uploads in browser memory before sending bytes over the wire, providing thumbnail preview, file dimensions, file size, preset selector, format pills, live quality slider, and storage destination with 1-click proceed or cancel.

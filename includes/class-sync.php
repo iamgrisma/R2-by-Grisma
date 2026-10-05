@@ -54,14 +54,28 @@ class R2G_Sync {
         $batch_size = (int) ($_POST['batch_size'] ?? 5);
         $batch_size = max(1, min(20, $batch_size));
 
-        // Read batch wildcard conversion options
-        $preset  = sanitize_text_field($_POST['preset'] ?? '');
+        // Read batch conversion options
         $format  = sanitize_text_field($_POST['format'] ?? '');
+        $preset  = sanitize_text_field($_POST['preset'] ?? '');
         $quality = isset($_POST['quality']) ? (int)$_POST['quality'] : 0;
         $engine  = sanitize_text_field($_POST['engine'] ?? 'server');
 
         $batch_options = array();
-        if (!empty($preset) && $preset !== 'keep_current' && $preset !== 'none') {
+        if ($format && $format !== 'keep' && $format !== 'keep_current' && $format !== 'none') {
+            $batch_options = array(
+                'format'    => $format,
+                'quality'   => $quality > 0 ? $quality : 82,
+                'max_width' => 1920,
+                'compress'  => 1,
+                'engine'    => $engine,
+            );
+        } elseif ($format === 'none') {
+            $batch_options = array(
+                'format'    => 'original',
+                'compress'  => 0,
+                'engine'    => 'none',
+            );
+        } elseif (!empty($preset) && $preset !== 'keep_current' && $preset !== 'none') {
             $presets = R2G_Media_Handler::get_presets();
             if (isset($presets[$preset])) {
                 $batch_options = $presets[$preset];
