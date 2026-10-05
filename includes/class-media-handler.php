@@ -1,9 +1,9 @@
 <?php
 /**
  * Media Attachment Lifecycle Handler
- * Intercepts uploads, applies compression pipeline, uploads to R2,
- * cleans local files if configured, and handles R2 deletion on attachment trash.
- * Gives user complete control over automated vs manual actions.
+ * Intercepts uploads, applies compression and format conversion,
+ * syncs final optimized files to Cloudflare R2, cleans local files if configured,
+ * and handles R2 deletion on attachment trash.
  *
  * @package R2_By_Grisma
  */
@@ -33,14 +33,14 @@ class R2G_Media_Handler {
         add_filter('wp_read_image_metadata', array($this, 'clean_image_metadata'), 10, 3);
         add_filter('wp_insert_attachment_data', array($this, 'clean_attachment_title'), 10, 2);
 
-        // Intercept attachment metadata generation (after thumbnails are cut)
+        // Core upload interception: convert to WebP / compress BEFORE attachment is created and thumbnails cut
+        add_filter('wp_handle_upload', array($this, 'on_handle_upload'), 10, 2);
+
+        // Intercept attachment metadata generation (sync final image and thumbnails to R2)
         add_filter('wp_generate_attachment_metadata', array($this, 'on_generate_metadata'), 20, 2);
 
         // Delete from R2 when deleted from WordPress Media Library
         add_action('delete_attachment', array($this, 'on_delete_attachment'));
-
-        // Background async compression event
-        add_action('r2g_async_resmush_job', array('R2G_Optimizer', 'process_resmush_async'));
     }
 
     /**
@@ -146,46 +146,129 @@ class R2G_Media_Handler {
     }
 
     /**
-     * Process attachment upon upload
+     * Helper to read upload preference (from POST, Cookie, or Admin default)
+     *
+     * @param string $key
+     * @param mixed $default
+     * @return mixed
+     */
+    public static function get_upload_pref($key, $default = null) {
+        if (isset($_POST[$key]) && $_POST[$key] !== '') {
+            return sanitize_text_field(wp_unslash($_POST[$key]));
+        }
+        if (isset($_COOKIE[$key]) && $_COOKIE[$key] !== '') {
+            return sanitize_text_field(wp_unslash($_COOKIE[$key]));
+        }
+        return $default;
+    }
+
+    /**
+     * Intercept uploaded file immediately after move_uploaded_file succeeds
+     * Performs server-side WebP conversion and compression BEFORE attachment creation and thumbnail cuts.
+     *
+     * @param array $upload ['file' => ..., 'url' => ..., 'type' => ...]
+     * @param string $action 'upload' or 'sideload'
+     * @return array
+     */
+    public function on_handle_upload($upload, $action = 'upload') {
+        if (isset($upload['error']) || empty($upload['file'])) {
+            return $upload;
+        }
+
+        $mime = $upload['type'] ?? '';
+        // Only process raster images (JPEG, PNG, WebP) - skip SVG, PDF, video, audio
+        if (strpos($mime, 'image/') !== 0 || strpos($mime, 'svg') !== false) {
+            return $upload;
+        }
+
+        $file_path = $upload['file'];
+        if (!file_exists($file_path)) {
+            return $upload;
+        }
+
+        // Read preferences (Upload-Time override via POST/Cookie or Admin Presets)
+        $compress_enabled = (int) self::get_upload_pref('r2g_compress', get_option('r2g_compress_enabled', 1));
+        $format           = self::get_upload_pref('r2g_format', get_option('r2g_compress_format', 'webp'));
+        $quality          = (int) self::get_upload_pref('r2g_quality', get_option('r2g_compress_quality', 82));
+        $max_width        = (int) self::get_upload_pref('r2g_max_width', get_option('r2g_max_width', 1920));
+
+        // If compression or format conversion is enabled
+        if ($compress_enabled || $format === 'webp') {
+            $opt_res = R2G_Optimizer::optimize_local_file($file_path, array(
+                'format'    => ($format === 'webp') ? 'webp' : 'original',
+                'quality'   => $quality,
+                'max_width' => $max_width,
+                'compress'  => (bool)$compress_enabled,
+            ));
+
+            if ($opt_res['success'] && !empty($opt_res['file_path'])) {
+                $new_file = $opt_res['file_path'];
+                $upload['file'] = $new_file;
+
+                if (!empty($opt_res['mime'])) {
+                    $upload['type'] = $opt_res['mime'];
+                }
+
+                if ($new_file !== $file_path) {
+                    $old_ext = pathinfo($file_path, PATHINFO_EXTENSION);
+                    $new_ext = pathinfo($new_file, PATHINFO_EXTENSION);
+                    $upload['url'] = preg_replace('/\.' . preg_quote($old_ext, '/') . '$/i', '.' . $new_ext, $upload['url']);
+                }
+            }
+        }
+
+        return $upload;
+    }
+
+    /**
+     * Process attachment upon metadata generation
+     * Uploads the final processed image and thumbnails to Cloudflare R2
      *
      * @param array $metadata
      * @param int $attachment_id
      * @return array
      */
     public function on_generate_metadata($metadata, $attachment_id) {
-        // Check if user enabled automatic upload (Default: 1, user can disable for manual control)
         $auto_upload = (int) get_option('r2g_auto_upload', 1);
 
         if (!wp_attachment_is_image($attachment_id)) {
-            // Upload non-image files directly to R2 if auto-upload is on
             if ($auto_upload) {
                 self::sync_attachment_to_r2($attachment_id);
             }
             return $metadata;
         }
 
-        $engine = get_option('r2g_compress_engine', 'browser'); // 'browser', 'server', 'resmush_async', 'none'
-        $format = get_option('r2g_compress_format', 'webp');
-        $quality = (int)get_option('r2g_compress_quality', 82);
-        $max_width = (int)get_option('r2g_max_width', 1920);
-
         $file_path = get_attached_file($attachment_id);
         if (!$file_path || !file_exists($file_path)) {
             return $metadata;
         }
 
+        // Clean Intel EXIF software metadata junk from post
+        $post_obj = get_post($attachment_id);
+        if ($post_obj && !empty($post_obj->post_excerpt) && stripos($post_obj->post_excerpt, 'Intel') !== false) {
+            wp_update_post(array('ID' => $attachment_id, 'post_excerpt' => ''));
+        }
+        if (!empty($metadata['image_meta']['caption']) && stripos($metadata['image_meta']['caption'], 'Intel') !== false) {
+            $metadata['image_meta']['caption'] = '';
+        }
+
+        // Failsafe check: if wp_handle_upload was bypassed and format is webp, but file is still jpg/png
+        $format = self::get_upload_pref('r2g_format', get_option('r2g_compress_format', 'webp'));
         $current_ext = strtolower(pathinfo($file_path, PATHINFO_EXTENSION));
 
-        // 1. Mandatory Format & Compression Enforcement before R2 Upload:
-        // Converts raw PNG/JPG to WebP even if browser canvas was bypassed (e.g. built-in browser uploader on media-new.php)
-        if ($format !== 'none' && ($engine === 'server' || ($format === 'webp' && $current_ext !== 'webp'))) {
+        if ($format === 'webp' && $current_ext !== 'webp') {
+            $compress_enabled = (int) self::get_upload_pref('r2g_compress', get_option('r2g_compress_enabled', 1));
+            $quality          = (int) self::get_upload_pref('r2g_quality', get_option('r2g_compress_quality', 82));
+            $max_width        = (int) self::get_upload_pref('r2g_max_width', get_option('r2g_max_width', 1920));
+
             $opt_res = R2G_Optimizer::optimize_local_file($file_path, array(
-                'format'    => $format,
+                'format'    => 'webp',
                 'quality'   => $quality,
                 'max_width' => $max_width,
+                'compress'  => (bool)$compress_enabled,
             ));
 
-            if ($opt_res['success'] && $opt_res['file_path'] !== $file_path) {
+            if ($opt_res['success'] && !empty($opt_res['file_path']) && $opt_res['file_path'] !== $file_path) {
                 update_attached_file($attachment_id, $opt_res['file_path']);
                 $file_path = $opt_res['file_path'];
                 $metadata['file'] = _wp_relative_upload_path($file_path);
@@ -194,55 +277,11 @@ class R2G_Media_Handler {
                     'post_mime_type' => !empty($opt_res['mime']) ? $opt_res['mime'] : 'image/webp',
                 ));
             }
-
-            // Purge Intel EXIF Software string from post_excerpt & metadata caption if present
-            $post_obj = get_post($attachment_id);
-            if ($post_obj && !empty($post_obj->post_excerpt) && stripos($post_obj->post_excerpt, 'Intel') !== false) {
-                wp_update_post(array(
-                    'ID'           => $attachment_id,
-                    'post_excerpt' => '',
-                ));
-            }
-            if (!empty($metadata['image_meta']['caption']) && stripos($metadata['image_meta']['caption'], 'Intel') !== false) {
-                $metadata['image_meta']['caption'] = '';
-            }
-
-            // Optimize thumbnail sizes too
-            if (!empty($metadata['sizes']) && is_array($metadata['sizes'])) {
-                $dir = dirname($file_path);
-                foreach ($metadata['sizes'] as $size_key => &$size_info) {
-                    $thumb_path = $dir . '/' . $size_info['file'];
-                    if (file_exists($thumb_path)) {
-                        $thumb_res = R2G_Optimizer::optimize_local_file($thumb_path, array(
-                            'format'    => $format,
-                            'quality'   => $quality,
-                            'max_width' => 0,
-                        ));
-                        if ($thumb_res['success'] && $thumb_res['file_path'] !== $thumb_path) {
-                            $size_info['file'] = basename($thumb_res['file_path']);
-                            if (!empty($thumb_res['mime'])) {
-                                $size_info['mime-type'] = $thumb_res['mime'];
-                            }
-                        }
-                    }
-                }
-            }
         }
 
-        // 2. Strict Safeguard: If format conversion is required but file is not formatted, DO NOT upload to R2
-        $final_ext = strtolower(pathinfo($file_path, PATHINFO_EXTENSION));
-        if ($format === 'webp' && $final_ext !== 'webp') {
-            return $metadata;
-        }
-
-        // 3. Upload to Cloudflare R2 if auto-upload is enabled
+        // Upload final processed image to Cloudflare R2
         if ($auto_upload) {
             self::sync_attachment_to_r2($attachment_id, false, $metadata);
-        }
-
-        // 4. If async reSmush is enabled, enqueue background optimization job
-        if ($engine === 'resmush_async') {
-            wp_schedule_single_event(time() + 5, 'r2g_async_resmush_job', array($attachment_id));
         }
 
         return $metadata;

@@ -3,7 +3,7 @@
  * Plugin Name: R2 by Grisma
  * Plugin URI: https://grisma.com.np
  * Description: Enterprise Cloudflare R2 sync with client-side Browser Edge compression, on-site WebP conversion, custom CDN delivery, and zero vendor bloat.
- * Version: 1.0.8
+ * Version: 1.0.9
  * Author: Grisma
  * Author URI: https://grisma.com.np
  * License: GPL v2 or later
@@ -19,7 +19,7 @@ if (!defined('ABSPATH')) {
 }
 
 // Define Constants
-define('R2G_VERSION', '1.0.8');
+define('R2G_VERSION', '1.0.9');
 define('R2G_FILE', __FILE__);
 define('R2G_PATH', plugin_dir_path(__FILE__));
 define('R2G_URL', plugin_dir_url(__FILE__));
@@ -65,8 +65,8 @@ class R2_By_Grisma {
         // Auto-migrate postmeta data from v1.0.0 on first admin load after upgrade
         add_action('admin_init', array($this, 'maybe_migrate_postmeta'));
 
-        // Auto-migrate to Server / API pipeline so browser uploads never freeze or get stuck
-        add_action('admin_init', array($this, 'maybe_migrate_engine_v107'));
+        // Auto-migrate to streamlined presets and upload-time workflow in v1.0.9
+        add_action('admin_init', array($this, 'maybe_migrate_v109'));
 
         // Initialize sub-modules
         R2G_Media_Handler::instance();
@@ -81,15 +81,26 @@ class R2_By_Grisma {
     }
 
     /**
-     * Switch default engine to server and disable blocking prompts so uploads are seamless and automatic
+     * Auto-migrate to streamlined presets and upload-time workflow
      */
-    public function maybe_migrate_engine_v107() {
-        if (!get_option('r2g_v107_migrated')) {
-            if (get_option('r2g_compress_engine') === 'browser') {
-                update_option('r2g_compress_engine', 'server');
-                update_option('r2g_prompt_confirm', 0);
+    public function maybe_migrate_v109() {
+        if (!get_option('r2g_v109_migrated')) {
+            if (get_option('r2g_compress_enabled') === false) {
+                update_option('r2g_compress_enabled', 1);
             }
-            update_option('r2g_v107_migrated', 1);
+            if (!get_option('r2g_compress_format')) {
+                update_option('r2g_compress_format', 'webp');
+            }
+            if (!get_option('r2g_compress_quality')) {
+                update_option('r2g_compress_quality', 82);
+            }
+            if (!get_option('r2g_max_width')) {
+                update_option('r2g_max_width', 1920);
+            }
+            if (!get_option('r2g_upload_workflow')) {
+                update_option('r2g_upload_workflow', 'prompt');
+            }
+            update_option('r2g_v109_migrated', 1);
         }
     }
 

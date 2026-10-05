@@ -1,13 +1,11 @@
 /**
- * R2 by Grisma — Universal Client-Side Image Compression & Format Conversion Engine
+ * R2 by Grisma — Upload-Time Control & Preference Interceptor
  *
- * Intercepts image uploads across ALL WordPress pipelines:
- * 1. Gutenberg Block Editor (drag & drop from PC, image blocks, cover, gallery)
- * 2. Media Library Multi-File Plupload (upload.php, media-new.php, wp.media modal)
- * 3. Browser Built-In Single File Uploader (media-new.php form)
- *
- * Converts to WebP in browser Canvas, applies quality/max-width settings,
- * provides pre-upload confirmation modal with clean Cancel, and pushes optimized files.
+ * Provides real-time upload control:
+ * 1. Sets upload preferences (format, compression, quality, max width) in cookies & POST params
+ * 2. Renders an interactive upload toolbar bar on media pages
+ * 3. Shows a pre-upload options modal when "Prompt on Upload" is enabled
+ * 4. Passes original native files to server without browser Canvas memory overhead
  *
  * @package R2_By_Grisma
  */
@@ -16,29 +14,116 @@
 
   if (typeof window === 'undefined') return;
 
-  const R2G_BrowserCompressor = {
+  const R2G_UploadManager = {
     config: window.r2g_compress_config || {
-      enabled: true,
-      engine: 'browser',
+      workflow: 'prompt',
       format: 'webp',
-      quality: 0.82,
+      compress: 1,
+      quality: 82,
       maxWidth: 1920,
-      promptConfirm: true,
+    },
+
+    setCookie: function(name, val) {
+      document.cookie = name + '=' + encodeURIComponent(val) + '; path=/; max-age=86400; SameSite=Lax';
+    },
+
+    getCookie: function(name) {
+      const match = document.cookie.match(new RegExp('(^| )' + name + '=([^;]+)'));
+      return match ? decodeURIComponent(match[2]) : null;
     },
 
     init: function() {
-      if (this.config.engine !== 'browser' || this.config.format === 'none') {
-        return;
-      }
+      // 1. Initialize active preferences from cookies or admin presets
+      this.format = this.getCookie('r2g_format') || this.config.format || 'webp';
+      this.compress = this.getCookie('r2g_compress') !== null ? parseInt(this.getCookie('r2g_compress'), 10) : (this.config.compress !== undefined ? this.config.compress : 1);
+      this.quality = this.getCookie('r2g_quality') ? parseInt(this.getCookie('r2g_quality'), 10) : (this.config.quality || 82);
+      this.maxWidth = this.getCookie('r2g_max_width') ? parseInt(this.getCookie('r2g_max_width'), 10) : (this.config.maxWidth || 1920);
 
+      this.syncCookies();
+
+      // 2. Inject Upload Settings Toolbar on media screens
+      this.injectUploadBar();
+
+      // 3. Hook upload channels
       this.hookPlupload();
       this.hookGutenberg();
       this.hookBrowserForm();
       this.injectModalHtml();
     },
 
+    syncCookies: function() {
+      this.setCookie('r2g_format', this.format);
+      this.setCookie('r2g_compress', this.compress);
+      this.setCookie('r2g_quality', this.quality);
+      this.setCookie('r2g_max_width', this.maxWidth);
+    },
+
+    isPromptMode: function() {
+      if (this.config.workflow !== 'prompt') return false;
+      if (sessionStorage.getItem('r2g_session_remember') === 'true') return false;
+      return true;
+    },
+
     /**
-     * 1. Intercept Gutenberg Block Editor media uploads (Drag & Drop, Image blocks, Replace)
+     * Inject Sleek Toolbar Bar in Media Library / Add New
+     */
+    injectUploadBar: function() {
+      const self = this;
+      const renderBar = function() {
+        if ($('#r2g-upload-toolbar').length) return;
+
+        const target = $('#wp-media-grid, .upload-php #wpbody-content .wrap, .media-new-php #wpbody-content .wrap, #async-upload-wrap').first();
+        if (!target.length) return;
+
+        const barHtml = `
+          <div id="r2g-upload-toolbar" class="r2g-upload-bar">
+            <span class="r2g-upload-bar-title">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/></svg>
+              Cloudflare R2 Upload Settings:
+            </span>
+            <div class="r2g-upload-bar-item">
+              <label for="r2g-bar-format">Format:</label>
+              <select id="r2g-bar-format">
+                <option value="webp" ${self.format === 'webp' ? 'selected' : ''}>WebP (Recommended)</option>
+                <option value="original" ${self.format === 'original' ? 'selected' : ''}>Preserve Original (Keep JPG/PNG)</option>
+              </select>
+            </div>
+            <div class="r2g-upload-bar-item">
+              <label for="r2g-bar-compress">Compression:</label>
+              <select id="r2g-bar-compress">
+                <option value="1" ${self.compress == 1 ? 'selected' : ''}>Compress & Optimize (${self.quality}%)</option>
+                <option value="0" ${self.compress == 0 ? 'selected' : ''}>Raw Original (No Compression)</option>
+              </select>
+            </div>
+            <div class="r2g-upload-bar-item">
+              <span style="font-size:11px; color:#64748b;">(Upload-time settings applied instantly)</span>
+            </div>
+          </div>
+        `;
+
+        if ($('#drag-drop-area').length) {
+          $('#drag-drop-area').before(barHtml);
+        } else {
+          target.find('h1').first().after(barHtml);
+        }
+
+        $('#r2g-bar-format').on('change', function() {
+          self.format = $(this).val();
+          self.syncCookies();
+        });
+
+        $('#r2g-bar-compress').on('change', function() {
+          self.compress = parseInt($(this).val(), 10);
+          self.syncCookies();
+        });
+      };
+
+      $(document).ready(renderBar);
+      $(document).on('uploaderReady', renderBar);
+    },
+
+    /**
+     * Intercept Gutenberg Block Editor media uploads
      */
     hookGutenberg: function() {
       const self = this;
@@ -58,12 +143,13 @@
               return f.type && f.type.indexOf('image/') === 0 && f.type.indexOf('svg') === -1;
             });
 
-            if (!imageFiles.length || self.config.engine !== 'browser' || self.config.format === 'none') {
+            if (!imageFiles.length || !self.isPromptMode()) {
+              self.syncCookies();
               return origUploadMedia.apply(this, arguments);
             }
 
-            const proceed = function(processedFiles) {
-              options.filesList = processedFiles;
+            const proceed = function() {
+              self.syncCookies();
               return origUploadMedia.call(this, options);
             };
 
@@ -74,16 +160,14 @@
               }
             };
 
-            if (self.config.promptConfirm) {
-              self.showConfirmModal(imageFiles, function(chosenFormat, chosenQuality, chosenMaxWidth) {
-                self.compressNativeFiles(rawFiles, chosenFormat, chosenQuality, chosenMaxWidth, proceed);
-              }, function() {
-                // Upload without compressing
-                proceed(rawFiles);
-              }, cancel);
-            } else {
-              self.compressNativeFiles(rawFiles, self.config.format, self.config.quality, self.config.maxWidth, proceed);
-            }
+            self.showConfirmModal(imageFiles, function(chosenFormat, chosenCompress, chosenQuality, chosenMaxWidth) {
+              self.format = chosenFormat;
+              self.compress = chosenCompress;
+              self.quality = chosenQuality;
+              self.maxWidth = chosenMaxWidth;
+              self.syncCookies();
+              proceed();
+            }, cancel);
           };
           return true;
         }
@@ -99,7 +183,7 @@
     },
 
     /**
-     * 2. Intercept standard WordPress Media Uploader (Plupload - upload.php, media-new.php, modal)
+     * Intercept standard WordPress Media Uploader (Plupload)
      */
     hookPlupload: function() {
       const self = this;
@@ -118,10 +202,40 @@
             if (!uploader || uploader._r2g_bound) return;
             uploader._r2g_bound = true;
 
+            // Attach upload parameters to every request
+            uploader.bind('BeforeUpload', function(up, file) {
+              up.settings.multipart_params = up.settings.multipart_params || {};
+              up.settings.multipart_params['r2g_format'] = self.format;
+              up.settings.multipart_params['r2g_compress'] = self.compress;
+              up.settings.multipart_params['r2g_quality'] = self.quality;
+              up.settings.multipart_params['r2g_max_width'] = self.maxWidth;
+            });
+
             uploader.bind('FilesAdded', function(up, files) {
+              const imageFiles = files.filter(f => f.type && f.type.startsWith('image/') && !f.type.includes('svg'));
+              if (!imageFiles.length || !self.isPromptMode()) {
+                self.syncCookies();
+                return;
+              }
+
+              // Pause uploader queue to prompt user
               up.stop();
-              self.processQueue(up, files, function() {
+
+              self.showConfirmModal(imageFiles, function(chosenFormat, chosenCompress, chosenQuality, chosenMaxWidth) {
+                self.format = chosenFormat;
+                self.compress = chosenCompress;
+                self.quality = chosenQuality;
+                self.maxWidth = chosenMaxWidth;
+                self.syncCookies();
+
+                // Resume upload queue
                 up.start();
+              }, function() {
+                // Cancelled
+                imageFiles.forEach(f => {
+                  if (up.removeFile) up.removeFile(f);
+                });
+                self.hideModal();
               });
             });
           };
@@ -133,7 +247,7 @@
     },
 
     /**
-     * 3. Intercept browser built-in single file uploader form (media-new.php?browser-uploader)
+     * Intercept browser built-in single file uploader form
      */
     hookBrowserForm: function() {
       const self = this;
@@ -146,224 +260,27 @@
 
         const file = fileInput.files[0];
         if (!file.type || file.type.indexOf('image/') !== 0 || file.type.indexOf('svg') !== -1) return;
-        if (self.config.engine !== 'browser' || self.config.format === 'none') return;
+        if (!self.isPromptMode()) {
+          self.syncCookies();
+          return;
+        }
 
         e.preventDefault();
 
-        const proceed = function(finalFile) {
-          form._r2g_submitting = true;
-          if (typeof DataTransfer !== 'undefined') {
-            const dt = new DataTransfer();
-            dt.items.add(finalFile);
-            fileInput.files = dt.files;
-          }
-          form.submit();
-        };
+        self.showConfirmModal([file], function(chosenFormat, chosenCompress, chosenQuality, chosenMaxWidth) {
+          self.format = chosenFormat;
+          self.compress = chosenCompress;
+          self.quality = chosenQuality;
+          self.maxWidth = chosenMaxWidth;
+          self.syncCookies();
 
-        const cancel = function() {
+          form._r2g_submitting = true;
+          form.submit();
+        }, function() {
           self.hideModal();
           fileInput.value = '';
-        };
-
-        if (self.config.promptConfirm) {
-          self.showConfirmModal([file], function(chosenFormat, chosenQuality, chosenMaxWidth) {
-            self.compressSingleImage(file, chosenFormat, chosenQuality, chosenMaxWidth, function(blob, newName) {
-              if (blob) {
-                const newFile = new File([blob], newName, { type: blob.type });
-                proceed(newFile);
-              } else {
-                proceed(file);
-              }
-            });
-          }, function() {
-            proceed(file);
-          }, cancel);
-        } else {
-          self.compressSingleImage(file, self.config.format, self.config.quality, self.config.maxWidth, function(blob, newName) {
-            if (blob) {
-              const newFile = new File([blob], newName, { type: blob.type });
-              proceed(newFile);
-            } else {
-              proceed(file);
-            }
-          });
-        }
-      });
-    },
-
-    /**
-     * Process list of Plupload selected files
-     */
-    processQueue: function(up, files, onComplete) {
-      const self = this;
-      const imageFiles = files.filter(f => f.type && f.type.startsWith('image/') && !f.type.includes('svg'));
-
-      if (!imageFiles.length) {
-        onComplete();
-        return;
-      }
-
-      const onCancel = function() {
-        imageFiles.forEach(f => {
-          if (up && up.removeFile) up.removeFile(f);
-        });
-        self.hideModal();
-      };
-
-      if (this.config.promptConfirm) {
-        this.showConfirmModal(imageFiles, function(chosenFormat, chosenQuality, chosenMaxWidth) {
-          self.compressPluploadFiles(imageFiles, chosenFormat, chosenQuality, chosenMaxWidth, onComplete);
-        }, function() {
-          onComplete();
-        }, onCancel);
-      } else {
-        self.compressPluploadFiles(imageFiles, self.config.format, self.config.quality, self.config.maxWidth, onComplete);
-      }
-    },
-
-    /**
-     * Compress native File objects (used by Gutenberg)
-     */
-    compressNativeFiles: function(files, format, quality, maxWidth, callback) {
-      const self = this;
-      const results = [];
-      let done = 0;
-
-      files.forEach(function(f, idx) {
-        if (!f.type || f.type.indexOf('image/') !== 0 || f.type.indexOf('svg') !== -1) {
-          results[idx] = f;
-          done++;
-          if (done >= files.length) {
-            self.hideModal();
-            callback(results);
-          }
-          return;
-        }
-
-        self.compressSingleImage(f, format, quality, maxWidth, function(blob, newName) {
-          if (blob) {
-            results[idx] = new File([blob], newName, { type: blob.type });
-          } else {
-            results[idx] = f;
-          }
-          done++;
-          if (done >= files.length) {
-            self.hideModal();
-            callback(results);
-          }
         });
       });
-    },
-
-    /**
-     * Compress Plupload file wrappers
-     */
-    compressPluploadFiles: function(files, format, quality, maxWidth, callback) {
-      const self = this;
-      let processed = 0;
-
-      const finishOne = () => {
-        processed++;
-        if (processed >= files.length) {
-          self.hideModal();
-          callback();
-        }
-      };
-
-      files.forEach(fileObj => {
-        const nativeFile = fileObj.getNative ? fileObj.getNative() : fileObj;
-        if (!nativeFile) {
-          finishOne();
-          return;
-        }
-
-        self.compressSingleImage(nativeFile, format, quality, maxWidth, function(compressedBlob, newName) {
-          if (compressedBlob && compressedBlob.size < nativeFile.size) {
-            const newFile = new File([compressedBlob], newName, { type: compressedBlob.type });
-            fileObj.size = newFile.size;
-            fileObj.name = newFile.name;
-            fileObj.type = newFile.type;
-            if (fileObj.destroy) fileObj.destroy();
-            fileObj.getSource = () => newFile;
-          }
-          finishOne();
-        });
-      });
-    },
-
-    /**
-     * Compress a single image file via HTML5 Canvas
-     */
-    compressSingleImage: function(file, format, quality, maxWidth, callback) {
-      let done = false;
-      const finish = function(blob, name) {
-        if (done) return;
-        done = true;
-        callback(blob, name);
-      };
-
-      // 6-second timeout failsafe: if canvas hangs or takes too long, never block upload
-      setTimeout(function() {
-        finish(null, file.name);
-      }, 6000);
-
-      try {
-        const objectUrl = URL.createObjectURL(file);
-        const img = new Image();
-        img.onload = function() {
-          try {
-            URL.revokeObjectURL(objectUrl);
-          } catch (e) {}
-
-          let width = img.width;
-          let height = img.height;
-
-          // Scale dimensions if larger than maxWidth
-          if (maxWidth && width > maxWidth) {
-            height = Math.round((height * maxWidth) / width);
-            width = maxWidth;
-          }
-
-          const canvas = document.createElement('canvas');
-          canvas.width = width;
-          canvas.height = height;
-          const ctx = canvas.getContext('2d');
-          ctx.drawImage(img, 0, 0, width, height);
-
-          // Determine target MIME
-          let mime = 'image/webp';
-          let extension = 'webp';
-
-          if (format === 'original') {
-            mime = file.type || 'image/jpeg';
-            extension = file.name.split('.').pop();
-          }
-
-          canvas.toBlob(function(blob) {
-            if (!blob) {
-              finish(null, file.name);
-              return;
-            }
-
-            const baseName = file.name.substring(0, file.name.lastIndexOf('.')) || file.name;
-            const cleanBase = baseName.replace(/-scaled$/i, '');
-            const finalName = format === 'webp' ? cleanBase + '.webp' : file.name;
-
-            finish(blob, finalName);
-          }, mime, quality);
-        };
-
-        img.onerror = function() {
-          try {
-            URL.revokeObjectURL(objectUrl);
-          } catch (e) {}
-          finish(null, file.name);
-        };
-
-        img.src = objectUrl;
-      } catch (err) {
-        finish(null, file.name);
-      }
     },
 
     /**
@@ -377,36 +294,54 @@
           <div class="r2g-modal-card">
             <div class="r2g-modal-header">
               <span class="r2g-modal-badge">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
-                Browser Edge Compression
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/></svg>
+                Cloudflare R2 Upload
               </span>
-              <h3>Optimize Image Before Upload?</h3>
-              <p>Compress image directly inside your browser before uploading to Cloudflare R2.</p>
+              <h3>Cloudflare R2 Upload Settings</h3>
+              <p>Choose format conversion and compression options for this upload.</p>
               <div id="r2g-modal-file-info" style="font-size:12px; color:#475569; margin-top:8px; font-weight:500; word-break:break-all;"></div>
             </div>
             <div class="r2g-modal-body">
               <div class="r2g-field-group">
-                <label>Target Format:</label>
+                <label>Format Conversion:</label>
                 <div class="r2g-radio-group">
                   <label class="r2g-radio-pill">
                     <input type="radio" name="r2g_modal_format" value="webp" checked>
-                    <span>WebP (Fastest & Smallest)</span>
+                    <span><strong>Convert to WebP (Recommended)</strong></span>
                   </label>
                   <label class="r2g-radio-pill">
                     <input type="radio" name="r2g_modal_format" value="original">
-                    <span>Keep Original (JPG/PNG)</span>
+                    <span>Preserve Original (Keep JPG/PNG)</span>
                   </label>
                 </div>
               </div>
               <div class="r2g-field-group">
-                <label>Quality: <span id="r2g-quality-val">82%</span></label>
+                <label>Compression & Resizing:</label>
+                <div class="r2g-radio-group">
+                  <label class="r2g-radio-pill">
+                    <input type="radio" name="r2g_modal_compress" value="1" checked>
+                    <span><strong>Compress & Optimize</strong></span>
+                  </label>
+                  <label class="r2g-radio-pill">
+                    <input type="radio" name="r2g_modal_compress" value="0">
+                    <span>Raw Original (No Compression)</span>
+                  </label>
+                </div>
+              </div>
+              <div class="r2g-field-group" id="r2g-modal-quality-group">
+                <label>Compression Quality: <span id="r2g-quality-val">82%</span></label>
                 <input type="range" id="r2g-modal-quality" min="60" max="95" value="82" class="r2g-slider">
+              </div>
+              <div style="margin-top:6px;">
+                <label style="font-size:12px; color:#64748b; font-weight:normal; display:flex; align-items:center; gap:6px; cursor:pointer;">
+                  <input type="checkbox" id="r2g-modal-remember" value="1">
+                  Remember my choice for this session (Do not ask again)
+                </label>
               </div>
             </div>
             <div class="r2g-modal-footer">
               <button type="button" id="r2g-modal-cancel" class="button" style="color:#d63638;">Cancel</button>
-              <button type="button" id="r2g-modal-skip" class="button">Upload Without Compressing</button>
-              <button type="button" id="r2g-modal-proceed" class="button button-primary">Compress & Upload</button>
+              <button type="button" id="r2g-modal-proceed" class="button button-primary button-large">Start Upload</button>
             </div>
           </div>
         </div>
@@ -417,29 +352,51 @@
       $('#r2g-modal-quality').on('input', function() {
         $('#r2g-quality-val').text($(this).val() + '%');
       });
+
+      $('input[name="r2g_modal_compress"]').on('change', function() {
+        if ($(this).val() == '0') {
+          $('#r2g-modal-quality-group').slideUp(150);
+        } else {
+          $('#r2g-modal-quality-group').slideDown(150);
+        }
+      });
     },
 
-    showConfirmModal: function(files, onProceed, onSkip, onCancel) {
+    showConfirmModal: function(files, onProceed, onCancel) {
       this.injectModalHtml();
       const modal = $('#r2g-confirm-modal');
 
       if (files && files.length) {
-        const fileNames = files.map(f => f.name || 'image').join(', ');
+        const fileNames = files.map(f => (f.name || 'image')).join(', ');
         $('#r2g-modal-file-info').text('Files: ' + fileNames);
+      }
+
+      // Pre-select current choices
+      $(`input[name="r2g_modal_format"][value="${this.format}"]`).prop('checked', true);
+      $(`input[name="r2g_modal_compress"][value="${this.compress}"]`).prop('checked', true);
+      $('#r2g-modal-quality').val(this.quality);
+      $('#r2g-quality-val').text(this.quality + '%');
+
+      if (this.compress == 0) {
+        $('#r2g-modal-quality-group').hide();
+      } else {
+        $('#r2g-modal-quality-group').show();
       }
 
       modal.fadeIn(150);
 
       $('#r2g-modal-proceed').off('click').on('click', function() {
-        const format = $('input[name="r2g_modal_format"]:checked').val() || 'webp';
-        const quality = parseInt($('#r2g-modal-quality').val(), 10) / 100;
-        modal.hide();
-        onProceed(format, quality, 1920);
-      });
+        const chosenFormat = $('input[name="r2g_modal_format"]:checked').val() || 'webp';
+        const chosenCompress = parseInt($('input[name="r2g_modal_compress"]:checked').val() || '1', 10);
+        const chosenQuality = parseInt($('#r2g-modal-quality').val(), 10) || 82;
+        const remember = $('#r2g-modal-remember').is(':checked');
 
-      $('#r2g-modal-skip').off('click').on('click', function() {
+        if (remember) {
+          sessionStorage.setItem('r2g_session_remember', 'true');
+        }
+
         modal.hide();
-        onSkip();
+        onProceed(chosenFormat, chosenCompress, chosenQuality, 1920);
       });
 
       $('#r2g-modal-cancel').off('click').on('click', function() {
@@ -454,7 +411,7 @@
   };
 
   $(document).ready(function() {
-    R2G_BrowserCompressor.init();
+    R2G_UploadManager.init();
   });
 
 })(jQuery);

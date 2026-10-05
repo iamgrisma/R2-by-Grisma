@@ -462,3 +462,40 @@ table.media td.thumbnail img {
   gap: 8px !important;
 }
 
+/* Sleek Toolbar for Media Upload Screens */
+.r2g-upload-bar {
+  display: flex !important;
+  align-items: center !important;
+  gap: 14px !important;
+  background: #f8fafc !important;
+  border: 1px solid #cbd5e1 !important;
+  border-radius: 8px !important;
+  padding: 10px 16px !important;
+  margin: 14px 0 16px 0 !important;
+  font-size: 13px !important;
+  color: #1e293b !important;
+  flex-wrap: wrap !important;
+}
+
+.r2g-upload-bar-title {
+  display: flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+  font-weight: 700 !important;
+  color: #0369a1 !important;
+}
+
+.r2g-upload-bar-item {
+  display: flex !important;
+  align-items: center !important;
+  gap: 6px !important;
+}
+
+.r2g-upload-bar select,
+.r2g-upload-bar input[type="number"] {
+  height: 30px !important;
+  font-size: 12px !important;
+  border-radius: 6px !important;
+  border-color: #cbd5e1 !important;
+}
+

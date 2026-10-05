@@ -1,14 +1,14 @@
 # R2 by Grisma
 
-Enterprise Cloudflare R2 media sync with Browser Edge image compression, WebP conversion, custom CDN delivery, and native WordPress Core auto-updates.
+Enterprise Cloudflare R2 media sync with upload-time format & compression controls, server-side WebP conversion, custom CDN delivery, and native WordPress Core auto-updates.
 
 ---
 
 ## ⚡ Highlights
 
 - **Pure S3 SigV4 Engine**: 100% pure PHP implementation with zero AWS SDK or third-party vendor dependencies (under 30KB total footprint).
-- **Browser Edge Compression**: Resizes and converts images to WebP directly inside the user's browser before network upload, dramatically slashing upload time and server resource consumption.
-- **Async Background Worker**: Optional background reSmush.it compression worker for instantaneous uploads with deferred image replacement.
+- **Upload-Time Control**: Preset defaults in Settings with full freedom to override format (WebP vs Preserve Original) and compression per upload.
+- **Streamlined Server-Side Processing**: Native WebP conversion and JPEG/PNG optimization using GD/Imagick editors with zero browser freezing.
 - **Storage Policies**:
   - `Both`: Keep local server copies alongside Cloudflare R2 backup.
   - `R2 Cloud Only`: Automatically purges local server files upon successful R2 upload to preserve server disk space.
@@ -45,7 +45,7 @@ Navigate to **Settings > R2 by Grisma**:
 - **R2 Access Key ID & Secret Access Key**: Generated from Cloudflare R2 > Manage R2 API Tokens.
 - **R2 Bucket Name**: The name of your R2 bucket.
 - **Custom CDN Domain**: Your public custom domain (e.g. `https://objects.yourdomain.com`).
-- **Compression Mode**: Choose between Browser Edge (Client-side), Local Server (GD/Imagick), or Async Background (reSmush.it).
+- **Optimization & Formats**: Configure presets for Format Conversion (WebP vs Original), Compression (Yes/No), Quality, Max Dimensions, and Upload Workflow (Prompt vs Automatic).
 
 ---
 
