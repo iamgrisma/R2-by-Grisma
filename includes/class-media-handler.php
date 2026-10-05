@@ -33,9 +33,6 @@ class R2G_Media_Handler {
         add_filter('wp_read_image_metadata', array($this, 'clean_image_metadata'), 10, 3);
         add_filter('wp_insert_attachment_data', array($this, 'clean_attachment_title'), 10, 2);
 
-        // Intercept upload BEFORE writing to disk: guarantees WebP conversion & max-width resizing across ALL upload paths
-        add_filter('wp_handle_upload_prefilter', array($this, 'handle_upload_prefilter'), 10, 1);
-
         // Intercept attachment metadata generation (after thumbnails are cut)
         add_filter('wp_generate_attachment_metadata', array($this, 'on_generate_metadata'), 20, 2);
 
@@ -44,86 +41,6 @@ class R2G_Media_Handler {
 
         // Background async compression event
         add_action('r2g_async_resmush_job', array('R2G_Optimizer', 'process_resmush_async'));
-    }
-
-    /**
-     * Intercept uploaded file BEFORE WordPress writes it to disk.
-     * Guarantees WebP conversion and max-width scaling across Gutenberg block upload,
-     * drag & drop, Plupload, media-new.php single file form, and REST API.
-     * Prevents raw uncompressed files from entering the server or R2.
-     *
-     * @param array $file
-     * @return array
-     */
-    public function handle_upload_prefilter($file) {
-        if (!empty($file['error']) || empty($file['tmp_name']) || !file_exists($file['tmp_name'])) {
-            return $file;
-        }
-
-        // Only process image files
-        $mime = !empty($file['type']) ? $file['type'] : '';
-        if (empty($mime) && function_exists('mime_content_type')) {
-            $mime = @mime_content_type($file['tmp_name']);
-        }
-
-        if (strpos($mime, 'image/') !== 0 || strpos($mime, 'image/svg') !== false) {
-            return $file;
-        }
-
-        $format = get_option('r2g_compress_format', 'webp');
-        $quality = (int) get_option('r2g_compress_quality', 82);
-        $max_width = (int) get_option('r2g_max_width', 1920);
-
-        // Clean filename: remove -scaled suffix if any
-        $orig_name = $file['name'];
-        $path_info = pathinfo($orig_name);
-        $raw_filename = $path_info['filename'];
-        $clean_filename = preg_replace('/-scaled$/i', '', $raw_filename);
-
-        // If WebP format is enabled and incoming file is not yet WebP, convert now
-        if ($format === 'webp') {
-            if (R2G_Optimizer::can_generate_webp()) {
-                $converted_tmp = $file['tmp_name'] . '.webp';
-                $editor = wp_get_image_editor($file['tmp_name']);
-
-                if (!is_wp_error($editor)) {
-                    $editor->set_quality($quality);
-
-                    // Resize if larger than max_width
-                    $size = $editor->get_size();
-                    if ($max_width > 0 && !empty($size['width']) && $size['width'] > $max_width) {
-                        $editor->resize($max_width, null, false);
-                    }
-
-                    $saved = $editor->save($converted_tmp, 'image/webp');
-                    if (!is_wp_error($saved) && file_exists($converted_tmp)) {
-                        @unlink($file['tmp_name']);
-                        $file['tmp_name'] = $converted_tmp;
-                        $file['name']     = $clean_filename . '.webp';
-                        $file['type']     = 'image/webp';
-                        $file['size']     = filesize($converted_tmp);
-                    }
-                }
-            }
-        } elseif ($format === 'original') {
-            // Compress original format and resize if needed
-            $editor = wp_get_image_editor($file['tmp_name']);
-            if (!is_wp_error($editor)) {
-                $editor->set_quality($quality);
-                $size = $editor->get_size();
-                if ($max_width > 0 && !empty($size['width']) && $size['width'] > $max_width) {
-                    $editor->resize($max_width, null, false);
-                }
-                $saved = $editor->save($file['tmp_name']);
-                if (!is_wp_error($saved)) {
-                    $file['size'] = filesize($file['tmp_name']);
-                }
-            }
-            $ext = !empty($path_info['extension']) ? $path_info['extension'] : 'jpg';
-            $file['name'] = $clean_filename . '.' . $ext;
-        }
-
-        return $file;
     }
 
     /**

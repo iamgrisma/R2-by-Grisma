@@ -84,8 +84,9 @@ class R2G_Admin {
             'ajax_url' => admin_url('admin-ajax.php'),
         ));
 
-        // Enqueue Browser Edge Compressor on post editors & upload pages
-        if (in_array($hook, array('upload.php', 'media-new.php', 'post.php', 'post-new.php'))) {
+        // Enqueue Browser Edge Compressor on post editors & upload pages ONLY if user explicitly enabled browser engine
+        $engine = get_option('r2g_compress_engine', 'server');
+        if ($engine === 'browser' && in_array($hook, array('upload.php', 'media-new.php', 'post.php', 'post-new.php'))) {
             $compress_deps = array('jquery');
             if (wp_script_is('wp-media-utils', 'registered')) {
                 $compress_deps[] = 'wp-media-utils';
@@ -98,8 +99,6 @@ class R2G_Admin {
                 R2G_VERSION,
                 true
             );
-
-            $engine = get_option('r2g_compress_engine', 'server');
             $format = get_option('r2g_compress_format', 'webp');
             $quality = ((int)get_option('r2g_compress_quality', 82)) / 100;
             $max_width = (int)get_option('r2g_max_width', 1920);
