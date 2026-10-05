@@ -1,17 +1,5 @@
 /**
  * R2 by Grisma — Upload Interceptor & Settings Manager
- * Version: 1.0.22
- *
- * Core Principles:
- * 1. ZERO browser canvas freezing: No client-side image manipulation, no blob alteration,
- *    and no DataTransfer swapping that hangs WordPress Plupload or Gutenberg at 0%/3%.
- * 2. Rock-solid Native Upload Flow: When Visual Interceptor is disabled (default), uploads flow
- *    100% natively through WordPress. Preferences (format, quality, engine, storage mode) are
- *    seamlessly conveyed to PHP via cookies and request headers.
- * 3. Primary Engine: reSmush.it cloud optimization with automatic, seamless fallback to Server GD/Imagick.
- * 4. Optional Visual Interceptor Modal: When enabled by the user in settings, pauses uploads
- *    cleanly before sending bytes, offers real server-side preview via AJAX, and proceeds without
- *    tampering with file streams.
  *
  * @package R2_By_Grisma
  */
@@ -95,7 +83,7 @@
       this.syncCookies();
       this.bindNetworkHeaders();
 
-      // Only hook upload transport interception if user explicitly enabled visual interceptor
+      // Optional visual modal
       if (parseInt(this.config.interceptor, 10) === 1) {
         this.hookPlupload();
         this.hookGutenberg();
@@ -115,7 +103,6 @@
     bindNetworkHeaders: function() {
       const self = this;
 
-      // 1. Hook jQuery AJAX for async-upload.php (used by standard Plupload)
       $(document).ajaxSend(function(event, xhr, settings) {
         if (settings && settings.url && settings.url.indexOf('async-upload.php') !== -1) {
           const uploadSettings = self.uploadSettings();
@@ -125,7 +112,6 @@
         }
       });
 
-      // 2. Hook wp.apiFetch for Gutenberg block editor REST API uploads
       if (typeof window.wp !== 'undefined' && wp.apiFetch && wp.apiFetch.use) {
         if (!wp.apiFetch._r2g_header_hooked) {
           wp.apiFetch._r2g_header_hooked = true;
@@ -676,7 +662,6 @@
           self.syncCookies();
         };
 
-        // When visual interceptor is enabled, gate upload start until modal confirmed
         if (typeof uploader.addFile === 'function' && !uploader._r2g_add_file_wrapped) {
           uploader._r2g_add_file_wrapped = true;
           const originalAddFile = uploader.addFile;

@@ -26,23 +26,12 @@ class R2G_Media_Handler {
     }
 
     public function __construct() {
-        // Disable WordPress 5.3+ big image scaling suffix "-scaled"
         add_filter('big_image_size_threshold', '__return_false');
-
-        // Clean EXIF software junk (like "Intel(R) JPEG Library") from attachment metadata, captions, and titles
         add_filter('wp_read_image_metadata', array($this, 'clean_image_metadata'), 10, 3);
         add_filter('wp_insert_attachment_data', array($this, 'clean_attachment_title'), 10, 2);
-
-        // Core upload interception: convert / compress BEFORE attachment is created and thumbnails cut
         add_filter('wp_handle_upload', array($this, 'on_handle_upload'), 10, 2);
-
-        // Apply compression quality to all WordPress-generated thumbnail cuts
         add_filter('wp_editor_set_quality', array($this, 'filter_editor_quality'), 10, 2);
-
-        // Intercept attachment metadata generation (sync final image and thumbnails to R2)
         add_filter('wp_generate_attachment_metadata', array($this, 'on_generate_metadata'), 20, 2);
-
-        // Delete from R2 when deleted from WordPress Media Library
         add_action('delete_attachment', array($this, 'on_delete_attachment'));
     }
 
@@ -284,14 +273,7 @@ class R2G_Media_Handler {
     }
 
     /**
-     * Resolve effective upload preferences with strict hierarchy:
-     * 1. Explicit POST parameters (e.g. from Plupload / FormData / AJAX)
-     * 2. HTTP headers (e.g. from REST API / apiFetch)
-     * 3. Explicit preset values
-     * 4. Session cookies, then site-wide defaults
-     *
-     * This guarantees a user selecting 'JPEG High Quality' or clicking 'JPG'
-     * is NEVER overridden by a stale cookie set to 'webp'.
+     * Resolve effective upload preferences
      *
      * @return array
      */
@@ -300,7 +282,6 @@ class R2G_Media_Handler {
         $preset_id = isset($_POST['r2g_preset']) ? sanitize_key(wp_unslash($_POST['r2g_preset'])) : '';
         $preset = isset($presets[$preset_id]) ? $presets[$preset_id] : null;
 
-        // 1. Format resolution: Explicit request -> Preset -> Session cookie -> Site default
         $format = '';
         if (!empty($_POST['r2g_format'])) {
             $format = sanitize_text_field(wp_unslash($_POST['r2g_format']));
@@ -319,7 +300,6 @@ class R2G_Media_Handler {
             $format = 'jpg';
         }
 
-        // 2. Quality resolution: Explicit request -> Preset -> Session cookie -> Site default
         $quality = 0;
         if (isset($_POST['r2g_quality']) && $_POST['r2g_quality'] !== '') {
             $quality = (int)$_POST['r2g_quality'];
@@ -334,7 +314,6 @@ class R2G_Media_Handler {
         }
         $quality = max(50, min(100, $quality));
 
-        // 3. Compress resolution:
         if (isset($_POST['r2g_compress']) && $_POST['r2g_compress'] !== '') {
             $compress = (int)$_POST['r2g_compress'];
         } elseif (isset($_SERVER['HTTP_X_R2G_COMPRESS']) && $_SERVER['HTTP_X_R2G_COMPRESS'] !== '') {
@@ -347,7 +326,6 @@ class R2G_Media_Handler {
             $compress = (int) get_option('r2g_compress_enabled', 1);
         }
 
-        // 4. Max width resolution:
         if (isset($_POST['r2g_max_width']) && $_POST['r2g_max_width'] !== '') {
             $max_width = (int)$_POST['r2g_max_width'];
         } elseif (isset($_SERVER['HTTP_X_R2G_MAX_WIDTH']) && $_SERVER['HTTP_X_R2G_MAX_WIDTH'] !== '') {
@@ -360,7 +338,6 @@ class R2G_Media_Handler {
             $max_width = (int) get_option('r2g_max_width', 1920);
         }
 
-        // 5. Engine resolution (the legacy 'browser' engine maps to reSmush):
         $engine = '';
         if (!empty($_POST['r2g_engine'])) {
             $engine = sanitize_text_field(wp_unslash($_POST['r2g_engine']));
@@ -373,14 +350,12 @@ class R2G_Media_Handler {
         }
         $engine = R2G_Optimizer::normalize_engine($engine);
 
-        // If raw lossless engine selected, disable lossy transforms
         if ($engine === 'none') {
             $compress = 0;
             $format = 'original';
             $max_width = 0;
         }
 
-        // 6. Storage Mode resolution:
         $storage_mode = '';
         if (!empty($_POST['r2g_storage_mode'])) {
             $storage_mode = sanitize_text_field(wp_unslash($_POST['r2g_storage_mode']));
@@ -461,8 +436,6 @@ class R2G_Media_Handler {
             'engine'    => $opts['engine'],
         ));
 
-        // A WebP policy is strict for new uploads: never report success while
-        // silently storing the original JPEG/PNG because conversion failed.
         if (empty($opt_res['success']) && $opts['format'] === 'webp' && strtolower(pathinfo($file_path, PATHINFO_EXTENSION)) !== 'webp') {
             $upload['error'] = !empty($opt_res['message'])
                 ? $opt_res['message']
@@ -492,7 +465,6 @@ class R2G_Media_Handler {
 
     /**
      * Process attachment upon metadata generation
-     * Uploads the final processed image and thumbnails to Cloudflare R2
      *
      * @param array $metadata
      * @param int $attachment_id
@@ -515,7 +487,6 @@ class R2G_Media_Handler {
             return $metadata;
         }
 
-        // Clean Intel EXIF software metadata junk from post
         $post_obj = get_post($attachment_id);
         if ($post_obj && !empty($post_obj->post_excerpt) && stripos($post_obj->post_excerpt, 'Intel') !== false) {
             wp_update_post(array('ID' => $attachment_id, 'post_excerpt' => ''));
@@ -524,11 +495,9 @@ class R2G_Media_Handler {
             $metadata['image_meta']['caption'] = '';
         }
 
-        // Check if master file was already optimized and converted in on_handle_upload
         $already_processed = isset(self::$processed_files[$file_path]);
 
         if (!$already_processed) {
-            // Sideloaded or direct upload that bypassed on_handle_upload
             $orig_size = (int) filesize($file_path);
             $opt_res = R2G_Optimizer::optimize_local_file($file_path, array(
                 'format'    => $opts['format'],
@@ -553,7 +522,6 @@ class R2G_Media_Handler {
             }
         }
 
-        // Persist what the engine really did, so a silent fallback is visible in the Media Library
         if (isset(self::$opt_info[$file_path])) {
             update_post_meta($attachment_id, '_r2g_opt_info', self::$opt_info[$file_path]);
             if ((self::$opt_info[$file_path]['engine_used'] ?? '') !== 'none') {
@@ -561,7 +529,6 @@ class R2G_Media_Handler {
             }
         }
 
-        // Upload final processed image to Cloudflare R2 unless user explicitly selected local_only
         if ($auto_upload && $storage_mode !== 'local_only') {
             self::sync_attachment_to_r2($attachment_id, false, $metadata, false);
         }
@@ -575,8 +542,8 @@ class R2G_Media_Handler {
      * @param int $attachment_id
      * @param bool $force_reupload
      * @param array|null $metadata
-     * @param bool $is_bulk_sync When true, local files are strictly preserved as backup!
-     * @param array $batch_options Optional batch wildcard optimization options
+     * @param bool $is_bulk_sync
+     * @param array $batch_options
      * @return bool
      */
     public static function sync_attachment_to_r2($attachment_id, $force_reupload = false, $metadata = null, $is_bulk_sync = false, $batch_options = array()) {
@@ -587,7 +554,6 @@ class R2G_Media_Handler {
 
         $file_path = get_attached_file($attachment_id);
         if (!$file_path || !file_exists($file_path)) {
-            // Local file doesn't exist. Check if it's already on R2!
             $record = R2G_Database::get($attachment_id);
             if ($record && $record->status === 'synced') {
                 return true;
@@ -595,7 +561,6 @@ class R2G_Media_Handler {
             return false;
         }
 
-        // If batch options are provided during bulk sync (wildcard conversion), apply before upload:
         if (!empty($batch_options) && is_array($batch_options) && !empty($batch_options['format'])) {
             $opt_res = R2G_Optimizer::optimize_local_file($file_path, $batch_options);
             if (empty($opt_res['success'])) {
@@ -621,7 +586,6 @@ class R2G_Media_Handler {
         $main_r2_key = self::get_r2_key_from_path($file_path);
         $original_size = file_exists($file_path) ? filesize($file_path) : 0;
 
-        // Upload main file
         $put_main = $client->put_object($file_path, $main_r2_key);
         if (!$put_main['success']) {
             R2G_Database::mark_failed($attachment_id);
@@ -631,7 +595,6 @@ class R2G_Media_Handler {
         $uploaded_keys = array($main_r2_key);
         $thumb_count = 0;
 
-        // Check thumbnail upload policy ('all' vs 'original_only')
         $upload_sizes_mode = get_option('r2g_upload_sizes', 'all');
 
         if ($upload_sizes_mode === 'all') {
@@ -658,19 +621,14 @@ class R2G_Media_Handler {
 
         $compressed_size = file_exists($file_path) ? filesize($file_path) : $original_size;
 
-        // Record sync status in postmeta
         update_post_meta($attachment_id, '_r2g_synced', 1);
         update_post_meta($attachment_id, '_r2g_key', $main_r2_key);
         update_post_meta($attachment_id, '_r2g_keys', $uploaded_keys);
         update_post_meta($attachment_id, '_r2g_synced_at', current_time('mysql'));
         delete_post_meta($attachment_id, '_r2g_local_deleted');
 
-        // Record in database index
         R2G_Database::mark_synced($attachment_id, $main_r2_key, $compressed_size, $original_size, $thumb_count);
 
-        // Handle "R2 Only" storage mode:
-        // CRITICAL DATA SAFETY RULE: NEVER delete local files during bulk sync!
-        // Local files are only deleted on single uploads if user/policy explicitly requested R2 Only.
         if (!$is_bulk_sync) {
             $opts = self::get_effective_upload_options();
             $storage_mode = $opts['storage_mode'] ?? get_option('r2g_storage_mode', 'both');
@@ -678,7 +636,6 @@ class R2G_Media_Handler {
                 if (empty($metadata)) {
                     $metadata = wp_get_attachment_metadata($attachment_id);
                 }
-                // Defer local deletion to PHP shutdown hook so REST API (Gutenberg) and Plupload can finalize response without missing-file errors
                 add_action('shutdown', function() use ($attachment_id, $file_path, $metadata) {
                     self::delete_local_files($attachment_id, $file_path, $metadata);
                 });
@@ -713,11 +670,7 @@ class R2G_Media_Handler {
             return false;
         }
 
-        // Check cleanup scope: 'all' vs 'original_only'
         $cleanup_scope = get_option('r2g_cleanup_scope', 'all');
-
-        // Never remove a local copy based only on a database flag. Verify every
-        // existing local file covered by this cleanup directly against R2 first.
         $paths = array($file_path);
         $upload_sizes_mode = get_option('r2g_upload_sizes', 'all');
         if ($cleanup_scope === 'all' && $upload_sizes_mode === 'all' && !empty($metadata['sizes']) && is_array($metadata['sizes'])) {
@@ -835,30 +788,25 @@ class R2G_Media_Handler {
             $keys = $main_key ? array($main_key) : array();
         }
 
-        // Delete each key from R2
         foreach ($keys as $k) {
             $client->delete_object($k);
         }
 
-        // Remove R2 postmeta
         delete_post_meta($attachment_id, '_r2g_synced');
         delete_post_meta($attachment_id, '_r2g_key');
         delete_post_meta($attachment_id, '_r2g_keys');
         delete_post_meta($attachment_id, '_r2g_synced_at');
 
-        // Check if local file still exists
         $file_path = get_attached_file($attachment_id);
         $has_local = !empty($file_path) && file_exists($file_path) && (filesize($file_path) > 300);
 
         if ($has_local) {
-            // Revert status to pending/local in database
             R2G_Database::upsert($attachment_id, array(
                 'status'    => 'pending',
                 'has_local' => 1,
                 'r2_key'    => '',
             ));
         } else {
-            // No local copy and deleted from R2
             R2G_Database::mark_deleted($attachment_id);
         }
 
@@ -877,7 +825,6 @@ class R2G_Media_Handler {
             self::delete_from_r2($attachment_id);
         }
 
-        // Remove from database index
         R2G_Database::remove($attachment_id);
     }
 }

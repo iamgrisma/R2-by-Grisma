@@ -117,7 +117,6 @@ class R2G_Admin {
             'ajax_url' => admin_url('admin-ajax.php'),
         ));
 
-        // Upload-time options script. It never touches the upload transport unless the optional "Ask before upload" popup is enabled.
         wp_enqueue_script(
             'r2g-upload-interceptor-js',
             R2G_URL . 'assets/js/upload-interceptor.js',
@@ -323,7 +322,6 @@ class R2G_Admin {
             wp_send_json_error(array('message' => esc_html__('Could not initialize temporary file for preview.', 'r2-by-grisma')));
         }
 
-        // The preview can include a slow reSmush.it call; never let PHP's own limit cut it short.
         if (function_exists('set_time_limit')) {
             @set_time_limit(180);
         }
@@ -349,7 +347,6 @@ class R2G_Admin {
         $data = file_get_contents($final_path);
         $base64 = 'data:' . $mime . ';base64,' . base64_encode($data);
 
-        // Cleanup temporary files immediately
         @unlink($temp_path);
         if ($final_path !== $temp_path && file_exists($final_path)) {
             @unlink($final_path);
@@ -360,7 +357,6 @@ class R2G_Admin {
         if (empty($opt_res['success']) && !empty($opt_res['message'])) {
             $engine_note = $opt_res['message'];
         }
-        // success = the requested engine did the work; fallback = reSmush was requested but GD finished the job
         $engine_status = ($engine === 'resmush' && $engine_used !== 'resmush') ? 'fallback' : 'success';
         if (empty($opt_res['success'])) {
             $engine_status = 'error';

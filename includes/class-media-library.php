@@ -601,7 +601,6 @@ class R2G_Media_Library {
                 'post_mime_type' => !empty($opt_res['mime']) ? $opt_res['mime'] : 'image/webp',
             ));
 
-            // The file is already optimized: keep on_generate_metadata from running the engine again.
             R2G_Media_Handler::mark_processed($new_file);
             require_once ABSPATH . 'wp-admin/includes/image.php';
             $metadata = wp_generate_attachment_metadata($id, $new_file);
@@ -625,7 +624,6 @@ class R2G_Media_Library {
 
     /**
      * Ajax: On-demand re-compression from Media Library table
-     * Compresses with chosen engine, updates metadata, and pushes new WebP to R2
      */
     public function ajax_recompress_attachment() {
         check_ajax_referer('r2g_admin_nonce', 'nonce');
@@ -672,7 +670,6 @@ class R2G_Media_Library {
                 'post_mime_type' => $mime,
             ));
 
-            // The file is already optimized: keep on_generate_metadata from running the engine again.
             R2G_Media_Handler::mark_processed($new_file);
             require_once ABSPATH . 'wp-admin/includes/image.php';
             $metadata = wp_generate_attachment_metadata($id, $new_file);
@@ -680,7 +677,6 @@ class R2G_Media_Library {
             update_post_meta($id, '_r2g_optimized', 1);
             update_post_meta($id, '_r2g_opt_info', R2G_Media_Handler::build_opt_info($opt_res, $opts, $orig_size, $new_file));
 
-            // Re-upload to R2 (overriding existing R2 copy)
             R2G_Media_Handler::sync_attachment_to_r2($id, true, $metadata);
 
             $rewriter = class_exists('R2G_URL_Rewriter') ? R2G_URL_Rewriter::instance() : null;

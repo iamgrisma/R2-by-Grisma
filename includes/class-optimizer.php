@@ -2,17 +2,6 @@
 /**
  * Image Optimizer Engine
  *
- * Primary engine : reSmush.it API (https://resmush.it/api/)
- * Fallback engine: WordPress image editor (PHP GD / Imagick)
- *
- * Pipeline for engine = "resmush":
- *   1. Fix EXIF orientation + shrink to max width when needed (keeps the file under reSmush's 5 MB limit
- *      and makes the API call fast).
- *   2. Send the JPG/PNG/GIF/BMP/TIFF to reSmush.it and keep the result when it is smaller.
- *   3. Only if the target format differs (e.g. WebP) or reSmush could not be used, finish with GD/Imagick.
- *
- * Every result carries `engine_used` and `engine_note` so the UI can always tell the user what really happened.
- *
  * @package R2_By_Grisma
  */
 
@@ -21,20 +10,15 @@ if (!defined('ABSPATH')) {
 }
 
 class R2G_Optimizer {
-    /** reSmush.it endpoint for direct file upload (documented as the recommended method). */
-    const RESMUSH_ENDPOINT = 'https://api.resmush.it/';
-
-    /** reSmush.it hard limit per file. */
+    const RESMUSH_ENDPOINT  = 'https://api.resmush.it/';
     const RESMUSH_MAX_BYTES = 5242880;
-
-    /** Large PNGs can take ~20s on reSmush.it, so give the API plenty of time. */
-    const RESMUSH_TIMEOUT = 60;
+    const RESMUSH_TIMEOUT   = 60;
 
     /**
-     * Normalize an engine slug. The old "browser" (canvas) engine was removed in 1.0.22 and maps to reSmush.
+     * Normalize engine slug
      *
      * @param string $engine
-     * @return string resmush|server|none
+     * @return string
      */
     public static function normalize_engine($engine) {
         $engine = sanitize_key((string) $engine);
@@ -124,12 +108,12 @@ class R2G_Optimizer {
     }
 
     /**
-     * Human readable one-liner describing what the engine pipeline really did.
+     * Get engine execution summary
      *
-     * @param string     $engine         Requested engine
-     * @param array|null $resmush_result Result of the reSmush stage
-     * @param bool       $gd_ran         Whether the GD/Imagick stage encoded the file
-     * @return array [ 'engine_used' => string, 'engine_note' => string ]
+     * @param string     $engine
+     * @param array|null $resmush_result
+     * @param bool       $gd_ran
+     * @return array
      */
     private static function describe_engine($engine, $resmush_result, $gd_ran) {
         if ($engine === 'none') {
@@ -156,8 +140,8 @@ class R2G_Optimizer {
      * Compress and optionally convert an image file.
      *
      * @param string $file_path Absolute path to the image
-     * @param array $options [ 'format' => 'webp'|'jpg'|'jpeg'|'png'|'original', 'quality' => 82, 'max_width' => 1920, 'compress' => bool, 'engine' => 'resmush'|'server'|'none' ]
-     * @return array [ 'success' => bool, 'file_path' => string, 'mime' => string, 'width' => int, 'height' => int, 'bytes_saved' => int, 'engine_used' => string, 'engine_note' => string, 'resmush_result' => array|null ]
+     * @param array $options
+     * @return array
      */
     public static function optimize_local_file($file_path, $options = array()) {
         if (!file_exists($file_path) || !is_readable($file_path)) {
@@ -188,7 +172,6 @@ class R2G_Optimizer {
             return self::fail($file_path, __('WebP conversion is required but this server cannot create WebP images.', 'r2-by-grisma'));
         }
 
-        // Determine if format conversion is requested and differs from current
         $needs_format_change = false;
         if ($format === 'webp' && $current_ext !== 'webp') {
             $needs_format_change = true;
@@ -200,7 +183,6 @@ class R2G_Optimizer {
             $needs_format_change = true;
         }
 
-        // If no format change, no compression, and no resize, nothing to do
         if (!$needs_format_change && !$compress && $max_width <= 0) {
             $d = self::describe_engine($engine, null, false);
             return array('success' => true, 'file_path' => $file_path, 'mime' => '', 'width' => 0, 'height' => 0, 'bytes_saved' => 0, 'engine_used' => $d['engine_used'], 'engine_note' => $d['engine_note'], 'resmush_result' => null);
@@ -210,15 +192,11 @@ class R2G_Optimizer {
         $resmush_result = null;
         $resmush_succeeded = false;
 
-        // Stage 1: reSmush.it on the *source* format. The API only accepts JPG/PNG/GIF/BMP/TIFF,
-        // so it must run before any WebP conversion.
         if ($engine === 'resmush' && $compress) {
             $resmush_result = self::resmush_stage($file_path, $quality, $max_width, $needs_format_change);
             $resmush_succeeded = !empty($resmush_result['success']);
         }
 
-        // A successful API response is the complete operation when the source
-        // already has the requested format and dimensions.
         clearstatcache(true, $file_path);
         $source_info = @getimagesize($file_path);
         $resize_required = $max_width > 0 && !empty($source_info[0]) && $source_info[0] > $max_width;
@@ -237,7 +215,6 @@ class R2G_Optimizer {
             );
         }
 
-        // Stage 2: WordPress image editor (GD / Imagick) - format conversion, resize, or fallback compression.
         $editor = wp_get_image_editor($file_path);
         if (is_wp_error($editor)) {
             return self::fail($file_path, $editor->get_error_message(), array('resmush_result' => $resmush_result));
@@ -329,15 +306,12 @@ class R2G_Optimizer {
     }
 
     /**
-     * Prepare a file for reSmush.it, then send it.
-     *
-     * reSmush.it strips EXIF by default (which would drop the rotation flag of phone photos) and refuses
-     * files above 5 MB, so rotate + shrink first when needed.
+     * Process image via reSmush.it
      *
      * @param string $file_path
      * @param int    $quality
      * @param int    $max_width
-     * @param bool   $will_convert Whether a GD/Imagick format conversion follows
+     * @param bool   $will_convert
      * @return array
      */
     private static function resmush_stage($file_path, $quality, $max_width, $will_convert) {
@@ -371,14 +345,12 @@ class R2G_Optimizer {
             );
         }
 
-        // reSmush's quality knob only affects JPEG. If WebP conversion follows, keep this pass gentle so the
-        // final encode (at the user's quality) is the only visible quality loss.
         $api_quality = $will_convert ? max($quality, 92) : $quality;
         return self::resmush_file($file_path, $api_quality);
     }
 
     /**
-     * Rotate (EXIF) and/or downscale the file in place, only keeping the result when it is usable.
+     * Downscale or orient image prior to API upload
      */
     private static function prepare_for_resmush($file_path, $max_width, $too_wide, $is_jpeg, $force = false) {
         $editor = wp_get_image_editor($file_path);
@@ -411,12 +383,11 @@ class R2G_Optimizer {
     }
 
     /**
-     * Compress an image using the reSmush.it API (https://resmush.it/api/).
-     * Uses the documented direct-upload endpoint, mandatory User-Agent + Referer headers, a generous timeout and one retry.
+     * Send file to reSmush.it API
      *
-     * @param string $file_path Absolute path to the file
-     * @param int $quality Target quality 50-100 (JPEG only; PNG/GIF are always lossless-optimized by the API)
-     * @return array [ 'success' => bool, 'status' => string, 'message' => string, 'percent' => int ]
+     * @param string $file_path
+     * @param int    $quality
+     * @return array
      */
     public static function resmush_file($file_path, $quality = 82) {
         if (!file_exists($file_path) || !is_readable($file_path)) {
@@ -451,7 +422,6 @@ class R2G_Optimizer {
             return array('success' => false, 'status' => 'read_error', 'message' => __('Could not read image file.', 'r2-by-grisma'));
         }
 
-        // The API can take ~20s for large PNGs; never let PHP's own limit kill the upload request meanwhile.
         if (function_exists('set_time_limit')) {
             @set_time_limit(180);
         }
@@ -499,7 +469,6 @@ class R2G_Optimizer {
                 $err_code = is_numeric($decoded['error']) ? (int) $decoded['error'] : 0;
                 $err_msg = $decoded['error_long'] ?? ($decoded['message'] ?? __('unknown error', 'r2-by-grisma'));
                 $last_error = $err_msg;
-                // Temporary reSmush server problems are worth one more try; everything else is final.
                 if (in_array($err_code, array(501, 503, 504), true)) {
                     continue;
                 }
@@ -526,7 +495,6 @@ class R2G_Optimizer {
             return array('success' => false, 'status' => 'no_dest', 'message' => __('reSmush.it returned no optimized file.', 'r2-by-grisma'));
         }
 
-        // reSmush serves the result over plain http (https is not available on its static hosts).
         $new_bytes = '';
         $download_urls = array($data['dest']);
         if (strpos($data['dest'], 'http://') === 0) {
@@ -565,7 +533,6 @@ class R2G_Optimizer {
             );
         }
 
-        // reSmush could not make it smaller: that is a valid outcome, not a failure.
         return array(
             'success' => true,
             'status'  => 'already_optimal',
@@ -574,3 +541,4 @@ class R2G_Optimizer {
         );
     }
 }
+

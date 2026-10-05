@@ -25,37 +25,20 @@ class R2G_URL_Rewriter {
     }
 
     public function __construct() {
-        // Only hook if custom domain is configured
         $domain = get_option('r2g_custom_domain', '');
         if (empty($domain)) {
             return;
         }
 
-        // 1. Core attachment URL filter
         add_filter('wp_get_attachment_url', array($this, 'filter_attachment_url'), 20, 2);
-
-        // 2. Downsized image / thumbnail generation filter
         add_filter('image_downsize', array($this, 'filter_image_downsize'), 20, 3);
-
-        // 3. Image src array filter (fallback for wp_get_attachment_image_src)
         add_filter('wp_get_attachment_image_src', array($this, 'filter_attachment_image_src'), 20, 4);
-
-        // 4. Thumb URL filter
         add_filter('wp_get_attachment_thumb_url', array($this, 'filter_thumb_url'), 20, 2);
-
-        // 5. Responsive srcset filter
         add_filter('wp_calculate_image_srcset', array($this, 'filter_srcset'), 20, 5);
-
-        // 6. Media Library Grid view, Edit modal, and Gutenberg attachment preparation
         add_filter('wp_prepare_attachment_for_js', array($this, 'filter_attachment_for_js'), 20, 3);
-
-        // 7. Headless REST API attachment preparation
         add_filter('rest_prepare_attachment', array($this, 'filter_rest_attachment'), 20, 3);
-
-        // 8. Admin Post Thumbnail preview (Featured Image metabox)
         add_filter('admin_post_thumbnail_html', array($this, 'filter_admin_thumbnail_html'), 20, 3);
 
-        // 9. Traditional frontend theme post content rewriter
         if (!is_admin()) {
             add_filter('the_content', array($this, 'filter_content_urls'), 20);
         }

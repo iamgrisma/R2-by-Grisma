@@ -3,7 +3,7 @@
  * Plugin Name: R2 by Grisma
  * Plugin URI: https://grisma.com.np
  * Description: Enterprise Cloudflare R2 sync with reSmush.it cloud API & Server GD/Imagick optimization, on-site WebP conversion, custom CDN delivery, and zero vendor bloat.
- * Version: 1.0.22
+ * Version: 1.0.23
  * Author: Grisma
  * Author URI: https://grisma.com.np
  * License: GPL v2 or later
@@ -18,13 +18,11 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-// Define Constants
-define('R2G_VERSION', '1.0.22');
+define('R2G_VERSION', '1.0.23');
 define('R2G_FILE', __FILE__);
 define('R2G_PATH', plugin_dir_path(__FILE__));
 define('R2G_URL', plugin_dir_url(__FILE__));
 
-// Load Modules
 require_once R2G_PATH . 'includes/class-encryption.php';
 require_once R2G_PATH . 'includes/class-database.php';
 require_once R2G_PATH . 'includes/class-r2-client.php';
@@ -59,19 +57,11 @@ class R2_By_Grisma {
     }
 
     public function __construct() {
-        // Ensure database table exists (handles upgrades)
         add_action('admin_init', array('R2G_Database', 'maybe_upgrade'));
-
-        // Auto-migrate postmeta data from v1.0.0 on first admin load after upgrade
         add_action('admin_init', array($this, 'maybe_migrate_postmeta'));
-
-        // Auto-migrate to streamlined presets and upload-time workflow in v1.0.9
         add_action('admin_init', array($this, 'maybe_migrate_v109'));
-
-        // Auto-migrate to reSmush.it primary engine and safe native uploads in v1.0.22
         add_action('admin_init', array($this, 'maybe_migrate_v122'));
 
-        // Initialize sub-modules
         R2G_Media_Handler::instance();
         R2G_URL_Rewriter::instance();
         R2G_Media_Library::instance();
@@ -79,12 +69,11 @@ class R2_By_Grisma {
         R2G_Admin::instance();
         R2G_Updater::instance();
 
-        // Settings link in Plugins list
         add_filter('plugin_action_links_' . plugin_basename(__FILE__), array($this, 'add_plugin_action_links'));
     }
 
     /**
-     * Auto-migrate to streamlined presets and upload-time workflow
+     * Migrate presets and workflow defaults
      */
     public function maybe_migrate_v109() {
         if (!get_option('r2g_v109_migrated')) {
@@ -111,7 +100,7 @@ class R2_By_Grisma {
     }
 
     /**
-     * Auto-migrate to reSmush.it primary engine and safe native uploads in v1.0.22
+     * Migrate engine and upload preferences
      */
     public function maybe_migrate_v122() {
         if (!get_option('r2g_v122_migrated')) {
@@ -119,7 +108,6 @@ class R2_By_Grisma {
             if ($engine === false || $engine === 'browser' || empty($engine)) {
                 update_option('r2g_compress_engine', 'resmush');
             }
-            // By default, let uploads flow 100% natively without intercepting popups
             if (get_option('r2g_interceptor_enabled') === false) {
                 update_option('r2g_interceptor_enabled', 0);
             }

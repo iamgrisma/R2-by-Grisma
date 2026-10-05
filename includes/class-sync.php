@@ -36,7 +36,6 @@ class R2G_Sync {
 
     /**
      * Ajax: Sync a batch of unsynced attachments to R2
-     * NEVER auto-deletes local files during batch sync to ensure zero risk of data loss.
      */
     public function ajax_bulk_sync_batch() {
         check_ajax_referer('r2g_admin_nonce', 'nonce');
@@ -54,13 +53,11 @@ class R2G_Sync {
         $batch_size = (int) ($_POST['batch_size'] ?? 5);
         $batch_size = max(1, min(20, $batch_size));
 
-        // Read batch conversion options
         $format  = sanitize_text_field($_POST['format'] ?? '');
         $preset  = sanitize_text_field($_POST['preset'] ?? '');
         $quality = isset($_POST['quality']) ? (int)$_POST['quality'] : 0;
         $engine  = R2G_Optimizer::normalize_engine(sanitize_key($_POST['engine'] ?? ''));
 
-        // reSmush.it can take ~20s for a large PNG: keep batches tiny so one AJAX request never times out.
         if ($engine === 'resmush') {
             $batch_size = min($batch_size, 2);
         }
@@ -144,8 +141,7 @@ class R2G_Sync {
     }
 
     /**
-     * Ajax: Safely delete local copies of attachments that have been verified on R2.
-     * Provides deterministic, reversible space reclamation without risking data loss.
+     * Ajax: Delete local copies of attachments that have been verified on R2
      */
     public function ajax_bulk_clean_verified_local() {
         check_ajax_referer('r2g_admin_nonce', 'nonce');

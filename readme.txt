@@ -4,7 +4,7 @@ Tags: r2, cloudflare, cloudflare r2, image optimization, webp, s3, offload media
 Requires at least: 5.8
 Tested up to: 6.7
 Requires PHP: 7.4
-Stable tag: 1.0.22
+Stable tag: 1.0.23
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -32,6 +32,10 @@ Enterprise Cloudflare R2 sync with reSmush.it cloud API & Server GD/Imagick opti
 4. Click **Test Connection & Verify CDN** to confirm connection.
 
 == Changelog ==
+
+= 1.0.23 =
+* Codebase Cleanup: Streamlined code comments across all PHP and JavaScript modules to ensure clean, professional, production-grade documentation.
+* Native Upload & Compression Refinements: Polished reSmush.it primary API pipeline and GD/Imagick fallback mechanisms for optimal performance and upload stability.
 
 = 1.0.22 =
 * Elimination of Browser Canvas Engine: Completely removed client-side canvas manipulation, blob alteration, and DataTransfer file swapping that caused Plupload multi-file upload, Gutenberg block drag-and-drop, and Media Library uploads to hang at 0% or 3%.
