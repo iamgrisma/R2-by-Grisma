@@ -59,7 +59,7 @@ class R2G_Admin {
      * @param string $hook
      */
     public function enqueue_admin_assets($hook) {
-        $allowed = array('settings_page_r2-by-grisma', 'upload.php', 'post.php', 'post-new.php');
+        $allowed = array('settings_page_r2-by-grisma', 'upload.php', 'media-new.php', 'post.php', 'post-new.php');
         if (!in_array($hook, $allowed)) {
             return;
         }
@@ -85,7 +85,7 @@ class R2G_Admin {
         ));
 
         // Enqueue Browser Edge Compressor on post editors & upload pages
-        if (in_array($hook, array('upload.php', 'post.php', 'post-new.php'))) {
+        if (in_array($hook, array('upload.php', 'media-new.php', 'post.php', 'post-new.php'))) {
             wp_enqueue_script(
                 'r2g-browser-compress-js',
                 R2G_URL . 'assets/js/browser-compress.js',

@@ -26,6 +26,13 @@ class R2G_Media_Handler {
     }
 
     public function __construct() {
+        // Disable WordPress 5.3+ big image scaling suffix "-scaled"
+        add_filter('big_image_size_threshold', '__return_false');
+
+        // Clean EXIF software junk (like "Intel(R) JPEG Library") from attachment metadata and titles
+        add_filter('wp_read_image_metadata', array($this, 'clean_image_metadata'), 10, 3);
+        add_filter('wp_insert_attachment_data', array($this, 'clean_attachment_title'), 10, 2);
+
         // Intercept attachment metadata generation (after thumbnails are cut)
         add_filter('wp_generate_attachment_metadata', array($this, 'on_generate_metadata'), 20, 2);
 
@@ -34,6 +41,42 @@ class R2G_Media_Handler {
 
         // Background async compression event
         add_action('r2g_async_resmush_job', array('R2G_Optimizer', 'process_resmush_async'));
+    }
+
+    /**
+     * Prevent Intel JPEG Library and EXIF junk from polluting image metadata
+     *
+     * @param array $meta
+     * @param string $file
+     * @param int $source_image_type
+     * @return array
+     */
+    public function clean_image_metadata($meta, $file, $source_image_type) {
+        if (!empty($meta['software']) && stripos($meta['software'], 'Intel(R) JPEG Library') !== false) {
+            $meta['software'] = '';
+        }
+        if (!empty($meta['title']) && stripos($meta['title'], 'Intel(R) JPEG Library') !== false) {
+            $meta['title'] = '';
+        }
+        return $meta;
+    }
+
+    /**
+     * Prevent Intel JPEG Library from becoming attachment post title
+     *
+     * @param array $data
+     * @param array $postarr
+     * @return array
+     */
+    public function clean_attachment_title($data, $postarr) {
+        if (!empty($data['post_title']) && stripos($data['post_title'], 'Intel(R) JPEG Library') !== false) {
+            $file = isset($postarr['file']) ? $postarr['file'] : (isset($_FILES['async-upload']['name']) ? $_FILES['async-upload']['name'] : '');
+            $clean_name = sanitize_text_field(pathinfo($file, PATHINFO_FILENAME));
+            $clean_name = preg_replace('/-scaled$/i', '', $clean_name);
+            $clean_name = str_replace(array('-', '_'), ' ', $clean_name);
+            $data['post_title'] = !empty($clean_name) ? ucwords($clean_name) : 'Image';
+        }
+        return $data;
     }
 
     /**
@@ -109,8 +152,11 @@ class R2G_Media_Handler {
             return $metadata;
         }
 
-        // 1. If server compression is enabled, optimize local file and thumbnails now
-        if ($engine === 'server' && $format !== 'none') {
+        $current_ext = strtolower(pathinfo($file_path, PATHINFO_EXTENSION));
+
+        // 1. Mandatory Format & Compression Enforcement before R2 Upload:
+        // Converts raw PNG/JPG to WebP even if browser canvas was bypassed (e.g. built-in browser uploader on media-new.php)
+        if ($format !== 'none' && ($engine === 'server' || ($format === 'webp' && $current_ext !== 'webp'))) {
             $opt_res = R2G_Optimizer::optimize_local_file($file_path, array(
                 'format'    => $format,
                 'quality'   => $quality,
@@ -118,33 +164,45 @@ class R2G_Media_Handler {
             ));
 
             if ($opt_res['success'] && $opt_res['file_path'] !== $file_path) {
-                // Update attached file path if format changed (e.g. to webp)
                 update_attached_file($attachment_id, $opt_res['file_path']);
                 $file_path = $opt_res['file_path'];
+                $metadata['file'] = _wp_relative_upload_path($file_path);
             }
 
-            // Optimize thumbnail sizes
+            // Optimize thumbnail sizes too
             if (!empty($metadata['sizes']) && is_array($metadata['sizes'])) {
                 $dir = dirname($file_path);
-                foreach ($metadata['sizes'] as $size_key => $size_info) {
+                foreach ($metadata['sizes'] as $size_key => &$size_info) {
                     $thumb_path = $dir . '/' . $size_info['file'];
                     if (file_exists($thumb_path)) {
-                        R2G_Optimizer::optimize_local_file($thumb_path, array(
+                        $thumb_res = R2G_Optimizer::optimize_local_file($thumb_path, array(
                             'format'    => $format,
                             'quality'   => $quality,
                             'max_width' => 0,
                         ));
+                        if ($thumb_res['success'] && $thumb_res['file_path'] !== $thumb_path) {
+                            $size_info['file'] = basename($thumb_res['file_path']);
+                            if (!empty($thumb_res['mime'])) {
+                                $size_info['mime-type'] = $thumb_res['mime'];
+                            }
+                        }
                     }
                 }
             }
         }
 
-        // 2. Upload to Cloudflare R2 if auto-upload is enabled
+        // 2. Strict Safeguard: If format conversion is required but file is not formatted, DO NOT upload to R2
+        $final_ext = strtolower(pathinfo($file_path, PATHINFO_EXTENSION));
+        if ($format === 'webp' && $final_ext !== 'webp') {
+            return $metadata;
+        }
+
+        // 3. Upload to Cloudflare R2 if auto-upload is enabled
         if ($auto_upload) {
             self::sync_attachment_to_r2($attachment_id, false, $metadata);
         }
 
-        // 3. If async reSmush is enabled, enqueue background optimization job
+        // 4. If async reSmush is enabled, enqueue background optimization job
         if ($engine === 'resmush_async') {
             wp_schedule_single_event(time() + 5, 'r2g_async_resmush_job', array($attachment_id));
         }

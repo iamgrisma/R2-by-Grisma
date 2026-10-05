@@ -1,7 +1,15 @@
 /**
- * R2 by Grisma — Client-Side "Edge in Browser" Image Compression Engine
- * Intercepts media uploads in WordPress, compresses/converts to WebP in browser Canvas,
- * provides optional pre-upload confirmation modal, and pushes optimized files.
+ * R2 by Grisma — Universal Client-Side Image Compression & Format Conversion Engine
+ *
+ * Intercepts image uploads across ALL WordPress pipelines:
+ * 1. Gutenberg Block Editor (drag & drop from PC, image blocks, cover, gallery)
+ * 2. Media Library Multi-File Plupload (upload.php, media-new.php, wp.media modal)
+ * 3. Browser Built-In Single File Uploader (media-new.php form)
+ *
+ * Converts to WebP in browser Canvas, applies quality/max-width settings,
+ * provides pre-upload confirmation modal with clean Cancel, and pushes optimized files.
+ *
+ * @package R2_By_Grisma
  */
 (function($) {
   'use strict';
@@ -25,11 +33,73 @@
 
       this.hookPlupload();
       this.hookGutenberg();
+      this.hookBrowserForm();
       this.injectModalHtml();
     },
 
     /**
-     * Intercept standard WordPress Media Uploader (Plupload)
+     * 1. Intercept Gutenberg Block Editor media uploads (Drag & Drop, Image blocks, Replace)
+     */
+    hookGutenberg: function() {
+      const self = this;
+      const checkAndHook = function() {
+        if (typeof wp !== 'undefined' && wp.mediaUtils && wp.mediaUtils.uploadMedia) {
+          if (wp.mediaUtils._r2g_hooked) return true;
+          wp.mediaUtils._r2g_hooked = true;
+
+          const origUploadMedia = wp.mediaUtils.uploadMedia;
+          wp.mediaUtils.uploadMedia = function(options) {
+            if (!options || !options.filesList || !options.filesList.length) {
+              return origUploadMedia.apply(this, arguments);
+            }
+
+            const rawFiles = Array.from(options.filesList);
+            const imageFiles = rawFiles.filter(function(f) {
+              return f.type && f.type.indexOf('image/') === 0 && f.type.indexOf('svg') === -1;
+            });
+
+            if (!imageFiles.length || self.config.engine !== 'browser' || self.config.format === 'none') {
+              return origUploadMedia.apply(this, arguments);
+            }
+
+            const proceed = function(processedFiles) {
+              options.filesList = processedFiles;
+              return origUploadMedia.call(this, options);
+            };
+
+            const cancel = function() {
+              self.hideModal();
+              if (typeof options.onError === 'function') {
+                options.onError('Upload cancelled by user.');
+              }
+            };
+
+            if (self.config.promptConfirm) {
+              self.showConfirmModal(imageFiles, function(chosenFormat, chosenQuality, chosenMaxWidth) {
+                self.compressNativeFiles(rawFiles, chosenFormat, chosenQuality, chosenMaxWidth, proceed);
+              }, function() {
+                // Upload without compressing
+                proceed(rawFiles);
+              }, cancel);
+            } else {
+              self.compressNativeFiles(rawFiles, self.config.format, self.config.quality, self.config.maxWidth, proceed);
+            }
+          };
+          return true;
+        }
+        return false;
+      };
+
+      if (!checkAndHook()) {
+        const timer = setInterval(function() {
+          if (checkAndHook()) clearInterval(timer);
+        }, 300);
+        setTimeout(function() { clearInterval(timer); }, 15000);
+      }
+    },
+
+    /**
+     * 2. Intercept standard WordPress Media Uploader (Plupload - upload.php, media-new.php, modal)
      */
     hookPlupload: function() {
       const self = this;
@@ -49,7 +119,6 @@
             uploader._r2g_bound = true;
 
             uploader.bind('FilesAdded', function(up, files) {
-              // Pause uploader queue while compressing
               up.stop();
               self.processQueue(up, files, function() {
                 up.start();
@@ -64,14 +133,66 @@
     },
 
     /**
-     * Intercept Gutenberg Block Editor file drops/uploads
+     * 3. Intercept browser built-in single file uploader form (media-new.php?browser-uploader)
      */
-    hookGutenberg: function() {
-      // Intentionally passive to avoid conflicting with Gutenberg's native apiFetch media handlers
+    hookBrowserForm: function() {
+      const self = this;
+      $(document).on('submit', '#file-form', function(e) {
+        const form = this;
+        if (form._r2g_submitting) return;
+
+        const fileInput = form.querySelector('input[type="file"][name="async-upload"], input[type="file"]');
+        if (!fileInput || !fileInput.files || !fileInput.files.length) return;
+
+        const file = fileInput.files[0];
+        if (!file.type || file.type.indexOf('image/') !== 0 || file.type.indexOf('svg') !== -1) return;
+        if (self.config.engine !== 'browser' || self.config.format === 'none') return;
+
+        e.preventDefault();
+
+        const proceed = function(finalFile) {
+          form._r2g_submitting = true;
+          if (typeof DataTransfer !== 'undefined') {
+            const dt = new DataTransfer();
+            dt.items.add(finalFile);
+            fileInput.files = dt.files;
+          }
+          form.submit();
+        };
+
+        const cancel = function() {
+          self.hideModal();
+          fileInput.value = '';
+        };
+
+        if (self.config.promptConfirm) {
+          self.showConfirmModal([file], function(chosenFormat, chosenQuality, chosenMaxWidth) {
+            self.compressSingleImage(file, chosenFormat, chosenQuality, chosenMaxWidth, function(blob, newName) {
+              if (blob) {
+                const newFile = new File([blob], newName, { type: blob.type });
+                proceed(newFile);
+              } else {
+                proceed(file);
+              }
+            });
+          }, function() {
+            proceed(file);
+          }, cancel);
+        } else {
+          self.compressSingleImage(file, self.config.format, self.config.quality, self.config.maxWidth, function(blob, newName) {
+            if (blob) {
+              const newFile = new File([blob], newName, { type: blob.type });
+              proceed(newFile);
+            } else {
+              proceed(file);
+            }
+          });
+        }
+      });
     },
 
     /**
-     * Process list of selected files
+     * Process list of Plupload selected files
      */
     processQueue: function(up, files, onComplete) {
       const self = this;
@@ -83,7 +204,6 @@
       }
 
       const onCancel = function() {
-        // Abort upload and remove files from queue so they NEVER upload as -1, -2 duplicates
         imageFiles.forEach(f => {
           if (up && up.removeFile) up.removeFile(f);
         });
@@ -92,20 +212,53 @@
 
       if (this.config.promptConfirm) {
         this.showConfirmModal(imageFiles, function(chosenFormat, chosenQuality, chosenMaxWidth) {
-          self.compressFiles(imageFiles, chosenFormat, chosenQuality, chosenMaxWidth, onComplete);
+          self.compressPluploadFiles(imageFiles, chosenFormat, chosenQuality, chosenMaxWidth, onComplete);
         }, function() {
-          // User chose "Do not compress" -> upload raw
           onComplete();
         }, onCancel);
       } else {
-        self.compressFiles(imageFiles, self.config.format, self.config.quality, self.config.maxWidth, onComplete);
+        self.compressPluploadFiles(imageFiles, self.config.format, self.config.quality, self.config.maxWidth, onComplete);
       }
     },
 
     /**
-     * Compress files iteratively via HTML5 Canvas
+     * Compress native File objects (used by Gutenberg)
      */
-    compressFiles: function(files, format, quality, maxWidth, callback) {
+    compressNativeFiles: function(files, format, quality, maxWidth, callback) {
+      const self = this;
+      const results = [];
+      let done = 0;
+
+      files.forEach(function(f, idx) {
+        if (!f.type || f.type.indexOf('image/') !== 0 || f.type.indexOf('svg') !== -1) {
+          results[idx] = f;
+          done++;
+          if (done >= files.length) {
+            self.hideModal();
+            callback(results);
+          }
+          return;
+        }
+
+        self.compressSingleImage(f, format, quality, maxWidth, function(blob, newName) {
+          if (blob) {
+            results[idx] = new File([blob], newName, { type: blob.type });
+          } else {
+            results[idx] = f;
+          }
+          done++;
+          if (done >= files.length) {
+            self.hideModal();
+            callback(results);
+          }
+        });
+      });
+    },
+
+    /**
+     * Compress Plupload file wrappers
+     */
+    compressPluploadFiles: function(files, format, quality, maxWidth, callback) {
       const self = this;
       let processed = 0;
 
@@ -126,7 +279,6 @@
 
         self.compressSingleImage(nativeFile, format, quality, maxWidth, function(compressedBlob, newName) {
           if (compressedBlob && compressedBlob.size < nativeFile.size) {
-            // Replace plupload file reference
             const newFile = new File([compressedBlob], newName, { type: compressedBlob.type });
             fileObj.size = newFile.size;
             fileObj.name = newFile.name;
@@ -140,7 +292,7 @@
     },
 
     /**
-     * Compress a single image file via OffscreenCanvas / Canvas
+     * Compress a single image file via HTML5 Canvas
      */
     compressSingleImage: function(file, format, quality, maxWidth, callback) {
       const reader = new FileReader();
