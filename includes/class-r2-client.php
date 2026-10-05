@@ -104,10 +104,13 @@ class R2G_Client {
         $date_time = gmdate('Ymd\THis\Z');
         $date = gmdate('Ymd');
 
-        // Clean URI path (ensure leading slash, no double slashes)
-        $clean_uri = '/' . ltrim(preg_replace('#/+#', '/', $uri), '/');
+        // Clean URI path (ensure leading slash, no double slashes, RFC 3986 encoded per segment)
         if ($is_root) {
             $clean_uri = '/';
+        } else {
+            $segments = explode('/', ltrim(preg_replace('#/+#', '/', $uri), '/'));
+            $encoded_segments = array_map('rawurlencode', $segments);
+            $clean_uri = '/' . implode('/', $encoded_segments);
         }
 
         // Payload hash (sha256)

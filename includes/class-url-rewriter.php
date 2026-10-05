@@ -346,6 +346,10 @@ class R2G_URL_Rewriter {
      * @return WP_REST_Response
      */
     public function filter_rest_attachment($response, $post, $request) {
+        if (!$this->should_rewrite_attachment($post->ID)) {
+            return $response;
+        }
+
         $data = $response->get_data();
 
         if (!empty($data['source_url'])) {

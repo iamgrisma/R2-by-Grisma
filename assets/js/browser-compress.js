@@ -330,7 +330,8 @@
             }
 
             const baseName = file.name.substring(0, file.name.lastIndexOf('.')) || file.name;
-            const finalName = format === 'webp' ? baseName + '.webp' : file.name;
+            const cleanBase = baseName.replace(/-scaled$/i, '');
+            const finalName = format === 'webp' ? cleanBase + '.webp' : file.name;
 
             callback(blob, finalName);
           }, mime, quality);
@@ -349,7 +350,7 @@
       if (document.getElementById('r2g-confirm-modal')) return;
 
       const html = `
-        <div id="r2g-confirm-modal" class="r2g-modal-overlay" style="display:none;">
+        <div id="r2g-confirm-modal" class="r2g-modal-overlay" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; z-index:9999999;">
           <div class="r2g-modal-card">
             <div class="r2g-modal-header">
               <span class="r2g-modal-badge">
@@ -358,6 +359,7 @@
               </span>
               <h3>Optimize Image Before Upload?</h3>
               <p>Compress image directly inside your browser before uploading to Cloudflare R2.</p>
+              <div id="r2g-modal-file-info" style="font-size:12px; color:#475569; margin-top:8px; font-weight:500; word-break:break-all;"></div>
             </div>
             <div class="r2g-modal-body">
               <div class="r2g-field-group">
@@ -395,7 +397,14 @@
     },
 
     showConfirmModal: function(files, onProceed, onSkip, onCancel) {
+      this.injectModalHtml();
       const modal = $('#r2g-confirm-modal');
+
+      if (files && files.length) {
+        const fileNames = files.map(f => f.name || 'image').join(', ');
+        $('#r2g-modal-file-info').text('Files: ' + fileNames);
+      }
+
       modal.fadeIn(150);
 
       $('#r2g-modal-proceed').off('click').on('click', function() {

@@ -29,9 +29,12 @@ class R2G_Media_Handler {
         // Disable WordPress 5.3+ big image scaling suffix "-scaled"
         add_filter('big_image_size_threshold', '__return_false');
 
-        // Clean EXIF software junk (like "Intel(R) JPEG Library") from attachment metadata and titles
+        // Clean EXIF software junk (like "Intel(R) JPEG Library") from attachment metadata, captions, and titles
         add_filter('wp_read_image_metadata', array($this, 'clean_image_metadata'), 10, 3);
         add_filter('wp_insert_attachment_data', array($this, 'clean_attachment_title'), 10, 2);
+
+        // Intercept upload BEFORE writing to disk: guarantees WebP conversion & max-width resizing across ALL upload paths
+        add_filter('wp_handle_upload_prefilter', array($this, 'handle_upload_prefilter'), 10, 1);
 
         // Intercept attachment metadata generation (after thumbnails are cut)
         add_filter('wp_generate_attachment_metadata', array($this, 'on_generate_metadata'), 20, 2);
@@ -44,6 +47,86 @@ class R2G_Media_Handler {
     }
 
     /**
+     * Intercept uploaded file BEFORE WordPress writes it to disk.
+     * Guarantees WebP conversion and max-width scaling across Gutenberg block upload,
+     * drag & drop, Plupload, media-new.php single file form, and REST API.
+     * Prevents raw uncompressed files from entering the server or R2.
+     *
+     * @param array $file
+     * @return array
+     */
+    public function handle_upload_prefilter($file) {
+        if (!empty($file['error']) || empty($file['tmp_name']) || !file_exists($file['tmp_name'])) {
+            return $file;
+        }
+
+        // Only process image files
+        $mime = !empty($file['type']) ? $file['type'] : '';
+        if (empty($mime) && function_exists('mime_content_type')) {
+            $mime = @mime_content_type($file['tmp_name']);
+        }
+
+        if (strpos($mime, 'image/') !== 0 || strpos($mime, 'image/svg') !== false) {
+            return $file;
+        }
+
+        $format = get_option('r2g_compress_format', 'webp');
+        $quality = (int) get_option('r2g_compress_quality', 82);
+        $max_width = (int) get_option('r2g_max_width', 1920);
+
+        // Clean filename: remove -scaled suffix if any
+        $orig_name = $file['name'];
+        $path_info = pathinfo($orig_name);
+        $raw_filename = $path_info['filename'];
+        $clean_filename = preg_replace('/-scaled$/i', '', $raw_filename);
+
+        // If WebP format is enabled and incoming file is not yet WebP, convert now
+        if ($format === 'webp') {
+            if (R2G_Optimizer::can_generate_webp()) {
+                $converted_tmp = $file['tmp_name'] . '.webp';
+                $editor = wp_get_image_editor($file['tmp_name']);
+
+                if (!is_wp_error($editor)) {
+                    $editor->set_quality($quality);
+
+                    // Resize if larger than max_width
+                    $size = $editor->get_size();
+                    if ($max_width > 0 && !empty($size['width']) && $size['width'] > $max_width) {
+                        $editor->resize($max_width, null, false);
+                    }
+
+                    $saved = $editor->save($converted_tmp, 'image/webp');
+                    if (!is_wp_error($saved) && file_exists($converted_tmp)) {
+                        @unlink($file['tmp_name']);
+                        $file['tmp_name'] = $converted_tmp;
+                        $file['name']     = $clean_filename . '.webp';
+                        $file['type']     = 'image/webp';
+                        $file['size']     = filesize($converted_tmp);
+                    }
+                }
+            }
+        } elseif ($format === 'original') {
+            // Compress original format and resize if needed
+            $editor = wp_get_image_editor($file['tmp_name']);
+            if (!is_wp_error($editor)) {
+                $editor->set_quality($quality);
+                $size = $editor->get_size();
+                if ($max_width > 0 && !empty($size['width']) && $size['width'] > $max_width) {
+                    $editor->resize($max_width, null, false);
+                }
+                $saved = $editor->save($file['tmp_name']);
+                if (!is_wp_error($saved)) {
+                    $file['size'] = filesize($file['tmp_name']);
+                }
+            }
+            $ext = !empty($path_info['extension']) ? $path_info['extension'] : 'jpg';
+            $file['name'] = $clean_filename . '.' . $ext;
+        }
+
+        return $file;
+    }
+
+    /**
      * Prevent Intel JPEG Library and EXIF junk from polluting image metadata
      *
      * @param array $meta
@@ -52,30 +135,52 @@ class R2G_Media_Handler {
      * @return array
      */
     public function clean_image_metadata($meta, $file, $source_image_type) {
-        if (!empty($meta['software']) && stripos($meta['software'], 'Intel(R) JPEG Library') !== false) {
-            $meta['software'] = '';
-        }
-        if (!empty($meta['title']) && stripos($meta['title'], 'Intel(R) JPEG Library') !== false) {
-            $meta['title'] = '';
+        $junk_patterns = array('Intel(R) JPEG Library', 'Intel JPEG Library', 'Intel(R)');
+        foreach (array('software', 'title', 'caption', 'credit', 'copyright') as $field) {
+            if (!empty($meta[$field])) {
+                foreach ($junk_patterns as $junk) {
+                    if (stripos($meta[$field], $junk) !== false) {
+                        $meta[$field] = '';
+                        break;
+                    }
+                }
+            }
         }
         return $meta;
     }
 
     /**
-     * Prevent Intel JPEG Library from becoming attachment post title
+     * Prevent Intel JPEG Library from becoming attachment post title, caption, or description
      *
      * @param array $data
      * @param array $postarr
      * @return array
      */
     public function clean_attachment_title($data, $postarr) {
-        if (!empty($data['post_title']) && stripos($data['post_title'], 'Intel(R) JPEG Library') !== false) {
+        $junk_patterns = array('Intel(R) JPEG Library', 'Intel JPEG Library', 'Intel(R)');
+
+        foreach (array('post_title', 'post_excerpt', 'post_content') as $field) {
+            if (!empty($data[$field])) {
+                foreach ($junk_patterns as $junk) {
+                    if (stripos($data[$field], $junk) !== false) {
+                        $data[$field] = '';
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (empty($data['post_title'])) {
             $file = isset($postarr['file']) ? $postarr['file'] : (isset($_FILES['async-upload']['name']) ? $_FILES['async-upload']['name'] : '');
+            if (empty($file) && !empty($data['guid'])) {
+                $file = basename($data['guid']);
+            }
             $clean_name = sanitize_text_field(pathinfo($file, PATHINFO_FILENAME));
             $clean_name = preg_replace('/-scaled$/i', '', $clean_name);
             $clean_name = str_replace(array('-', '_'), ' ', $clean_name);
             $data['post_title'] = !empty($clean_name) ? ucwords($clean_name) : 'Image';
         }
+
         return $data;
     }
 
@@ -167,6 +272,22 @@ class R2G_Media_Handler {
                 update_attached_file($attachment_id, $opt_res['file_path']);
                 $file_path = $opt_res['file_path'];
                 $metadata['file'] = _wp_relative_upload_path($file_path);
+                wp_update_post(array(
+                    'ID'             => $attachment_id,
+                    'post_mime_type' => !empty($opt_res['mime']) ? $opt_res['mime'] : 'image/webp',
+                ));
+            }
+
+            // Purge Intel EXIF Software string from post_excerpt & metadata caption if present
+            $post_obj = get_post($attachment_id);
+            if ($post_obj && !empty($post_obj->post_excerpt) && stripos($post_obj->post_excerpt, 'Intel') !== false) {
+                wp_update_post(array(
+                    'ID'           => $attachment_id,
+                    'post_excerpt' => '',
+                ));
+            }
+            if (!empty($metadata['image_meta']['caption']) && stripos($metadata['image_meta']['caption'], 'Intel') !== false) {
+                $metadata['image_meta']['caption'] = '';
             }
 
             // Optimize thumbnail sizes too

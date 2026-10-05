@@ -69,14 +69,14 @@ class R2G_Optimizer {
         // Determine target mime and file path
         $path_info = pathinfo($file_path);
         $dirname = $path_info['dirname'];
-        $filename = $path_info['filename'];
+        $clean_filename = preg_replace('/-scaled$/i', '', $path_info['filename']);
 
         $target_mime = null;
         $target_file = $file_path;
 
         if ($format === 'webp' && self::can_generate_webp()) {
             $target_mime = 'image/webp';
-            $target_file = $dirname . '/' . $filename . '.webp';
+            $target_file = $dirname . '/' . $clean_filename . '.webp';
         }
 
         $saved = $editor->save($target_file, $target_mime);
