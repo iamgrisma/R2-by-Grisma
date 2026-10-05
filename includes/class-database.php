@@ -293,19 +293,57 @@ class R2G_Database {
         $total_compressed = (int) $wpdb->get_var("SELECT COALESCE(SUM(file_size), 0) FROM {$table} WHERE status = 'synced'");
         $total_thumbs = (int) $wpdb->get_var("SELECT COALESCE(SUM(thumb_count), 0) FROM {$table} WHERE status = 'synced'");
 
+        // Verified synced attachments that still exist locally and can be cleaned
+        $verified_with_local = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$table} WHERE status = 'synced' AND has_local = 1 AND r2_key != ''");
+
         return array(
-            'total_wp'         => $total_wp,
-            'synced'           => $synced,
-            'synced_both'      => $synced_both,
-            'cloud_only'       => $cloud_only,
-            'local_only'       => $local_only,
-            'pending'          => $pending,
-            'failed'           => $failed,
-            'not_indexed'      => $not_indexed,
-            'total_original'   => $total_original,
-            'total_compressed' => $total_compressed,
-            'savings_bytes'    => max(0, $total_original - $total_compressed),
-            'total_thumbs'     => $total_thumbs,
+            'total_wp'            => $total_wp,
+            'synced'              => $synced,
+            'synced_both'         => $synced_both,
+            'cloud_only'          => $cloud_only,
+            'local_only'          => $local_only,
+            'pending'             => $pending,
+            'failed'              => $failed,
+            'not_indexed'         => $not_indexed,
+            'total_original'      => $total_original,
+            'total_compressed'    => $total_compressed,
+            'savings_bytes'       => max(0, $total_original - $total_compressed),
+            'total_thumbs'        => $total_thumbs,
+            'verified_with_local' => $verified_with_local,
+        );
+    }
+
+    /**
+     * Get attachment IDs that are verified synced to R2 and still have local files
+     *
+     * @param int $limit
+     * @return array
+     */
+    public static function get_verified_synced_with_local_ids($limit = 50) {
+        global $wpdb;
+        $table = self::table();
+
+        return $wpdb->get_col($wpdb->prepare(
+            "SELECT attachment_id FROM {$table}
+             WHERE status = 'synced' AND has_local = 1 AND r2_key != ''
+             ORDER BY attachment_id DESC
+             LIMIT %d",
+            $limit
+        ));
+    }
+
+    /**
+     * Get count of verified synced attachments that still have local files
+     *
+     * @return int
+     */
+    public static function count_verified_synced_with_local() {
+        global $wpdb;
+        $table = self::table();
+
+        return (int) $wpdb->get_var(
+            "SELECT COUNT(*) FROM {$table}
+             WHERE status = 'synced' AND has_local = 1 AND r2_key != ''"
         );
     }
 

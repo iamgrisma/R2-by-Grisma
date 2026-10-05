@@ -28,6 +28,7 @@ class R2G_Sync {
     public function __construct() {
         // Ajax handlers
         add_action('wp_ajax_r2g_bulk_sync_batch', array($this, 'ajax_bulk_sync_batch'));
+        add_action('wp_ajax_r2g_bulk_clean_verified_local', array($this, 'ajax_bulk_clean_verified_local'));
         add_action('wp_ajax_r2g_get_stats', array($this, 'ajax_get_stats'));
         add_action('wp_ajax_r2g_reindex_media', array($this, 'ajax_reindex_media'));
         add_action('wp_ajax_r2g_import_legacy', array($this, 'ajax_import_legacy'));
@@ -35,6 +36,7 @@ class R2G_Sync {
 
     /**
      * Ajax: Sync a batch of unsynced attachments to R2
+     * NEVER auto-deletes local files during batch sync to ensure zero risk of data loss.
      */
     public function ajax_bulk_sync_batch() {
         check_ajax_referer('r2g_admin_nonce', 'nonce');
@@ -52,6 +54,31 @@ class R2G_Sync {
         $batch_size = (int) ($_POST['batch_size'] ?? 5);
         $batch_size = max(1, min(20, $batch_size));
 
+        // Read batch wildcard conversion options
+        $preset  = sanitize_text_field($_POST['preset'] ?? '');
+        $format  = sanitize_text_field($_POST['format'] ?? '');
+        $quality = isset($_POST['quality']) ? (int)$_POST['quality'] : 0;
+        $engine  = sanitize_text_field($_POST['engine'] ?? 'server');
+
+        $batch_options = array();
+        if (!empty($preset) && $preset !== 'keep_current' && $preset !== 'none') {
+            $presets = R2G_Media_Handler::get_presets();
+            if (isset($presets[$preset])) {
+                $batch_options = $presets[$preset];
+            } else {
+                $batch_options = array(
+                    'format'    => $format ?: 'webp',
+                    'quality'   => $quality ?: 82,
+                    'max_width' => 1920,
+                    'compress'  => 1,
+                );
+            }
+            if ($quality > 0) {
+                $batch_options['quality'] = $quality;
+            }
+            $batch_options['engine'] = $engine;
+        }
+
         $unsynced_ids = R2G_Database::get_unsynced_ids($batch_size);
 
         if (empty($unsynced_ids)) {
@@ -68,7 +95,8 @@ class R2G_Sync {
         $results = array();
 
         foreach ($unsynced_ids as $id) {
-            $ok = R2G_Media_Handler::sync_attachment_to_r2((int) $id, true);
+            // is_bulk_sync = true strictly guarantees local files are preserved as backup!
+            $ok = R2G_Media_Handler::sync_attachment_to_r2((int) $id, true, null, true, $batch_options);
             if ($ok) {
                 $synced++;
                 $results[] = array('id' => $id, 'status' => 'synced');
@@ -90,6 +118,53 @@ class R2G_Sync {
             'done'         => !$remaining,
             'results'      => $results,
             'stats'        => R2G_Database::get_stats(),
+        ));
+    }
+
+    /**
+     * Ajax: Safely delete local copies of attachments that have been verified on R2.
+     * Provides deterministic, reversible space reclamation without risking data loss.
+     */
+    public function ajax_bulk_clean_verified_local() {
+        check_ajax_referer('r2g_admin_nonce', 'nonce');
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error(array('message' => 'Unauthorized'));
+        }
+
+        $batch_size = (int) ($_POST['batch_size'] ?? 15);
+        $batch_size = max(1, min(50, $batch_size));
+
+        $ids = R2G_Database::get_verified_synced_with_local_ids($batch_size);
+
+        if (empty($ids)) {
+            wp_send_json_success(array(
+                'cleaned_count'       => 0,
+                'remaining'           => 0,
+                'done'                => true,
+                'stats'               => R2G_Database::get_stats(),
+                'verified_with_local' => 0,
+            ));
+        }
+
+        $cleaned = 0;
+        foreach ($ids as $id) {
+            $attachment_id = (int) $id;
+            $record = R2G_Database::get($attachment_id);
+            // Verify item has valid R2 key and synced status before cleaning local file
+            if ($record && $record->status === 'synced' && !empty($record->r2_key)) {
+                R2G_Media_Handler::delete_local_files($attachment_id);
+                $cleaned++;
+            }
+        }
+
+        $remaining_count = R2G_Database::count_verified_synced_with_local();
+
+        wp_send_json_success(array(
+            'cleaned_count'       => $cleaned,
+            'remaining'           => $remaining_count,
+            'done'                => ($remaining_count === 0),
+            'stats'               => R2G_Database::get_stats(),
+            'verified_with_local' => $remaining_count,
         ));
     }
 

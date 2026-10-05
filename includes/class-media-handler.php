@@ -323,15 +323,48 @@ class R2G_Media_Handler {
             $max_width = (int)$_SERVER['HTTP_X_R2G_MAX_WIDTH'];
         }
 
-        $engine = get_option('r2g_compress_engine', 'server');
+        // Engine resolution:
+        $engine = '';
+        if (!empty($_POST['r2g_engine'])) {
+            $engine = sanitize_text_field(wp_unslash($_POST['r2g_engine']));
+        } elseif (!empty($_SERVER['HTTP_X_R2G_ENGINE'])) {
+            $engine = sanitize_text_field(wp_unslash($_SERVER['HTTP_X_R2G_ENGINE']));
+        } elseif (!empty($_COOKIE['r2g_engine'])) {
+            $engine = sanitize_text_field(wp_unslash($_COOKIE['r2g_engine']));
+        } else {
+            $engine = get_option('r2g_compress_engine', 'server');
+        }
+        if (!in_array($engine, array('server', 'resmush', 'browser', 'none'), true)) {
+            $engine = 'server';
+        }
+
+        // Storage Mode resolution:
+        $storage_mode = '';
+        if (!empty($_POST['r2g_storage_mode'])) {
+            $storage_mode = sanitize_text_field(wp_unslash($_POST['r2g_storage_mode']));
+        } elseif (!empty($_SERVER['HTTP_X_R2G_STORAGE_MODE'])) {
+            $storage_mode = sanitize_text_field(wp_unslash($_SERVER['HTTP_X_R2G_STORAGE_MODE']));
+        } elseif (!empty($_COOKIE['r2g_storage_mode'])) {
+            $storage_mode = sanitize_text_field(wp_unslash($_COOKIE['r2g_storage_mode']));
+        } else {
+            $storage_mode = get_option('r2g_storage_mode', 'both');
+        }
+        if (!in_array($storage_mode, array('both', 'r2_only', 'local_only'), true)) {
+            $storage_mode = 'both';
+        }
+
+        // Client pre-compressed flag from browser canvas
+        $client_compressed = !empty($_POST['r2g_client_compressed']) || !empty($_SERVER['HTTP_X_R2G_CLIENT_COMPRESSED']);
 
         return array(
-            'preset'    => $preset_key,
-            'format'    => $format,
-            'quality'   => $quality,
-            'compress'  => (bool)$compress,
-            'max_width' => $max_width,
-            'engine'    => $engine,
+            'preset'            => $preset_key,
+            'format'            => $format,
+            'quality'           => $quality,
+            'compress'          => (bool)$compress,
+            'max_width'         => $max_width,
+            'storage_mode'      => $storage_mode,
+            'engine'            => $engine,
+            'client_compressed' => $client_compressed,
         );
     }
 
@@ -383,11 +416,12 @@ class R2G_Media_Handler {
         $opts = self::get_effective_upload_options();
 
         $opt_res = R2G_Optimizer::optimize_local_file($file_path, array(
-            'format'    => $opts['format'],
-            'quality'   => $opts['quality'],
-            'max_width' => $opts['max_width'],
-            'compress'  => $opts['compress'],
-            'engine'    => $opts['engine'],
+            'format'            => $opts['format'],
+            'quality'           => $opts['quality'],
+            'max_width'         => $opts['max_width'],
+            'compress'          => $opts['compress'],
+            'engine'            => $opts['engine'],
+            'client_compressed' => $opts['client_compressed'],
         ));
 
         if ($opt_res['success'] && !empty($opt_res['file_path'])) {
@@ -419,9 +453,11 @@ class R2G_Media_Handler {
      */
     public function on_generate_metadata($metadata, $attachment_id) {
         $auto_upload = (int) get_option('r2g_auto_upload', 1);
+        $opts = self::get_effective_upload_options();
+        $storage_mode = $opts['storage_mode'] ?? get_option('r2g_storage_mode', 'both');
 
         if (!wp_attachment_is_image($attachment_id)) {
-            if ($auto_upload) {
+            if ($auto_upload && $storage_mode !== 'local_only') {
                 self::sync_attachment_to_r2($attachment_id);
             }
             return $metadata;
@@ -446,13 +482,13 @@ class R2G_Media_Handler {
 
         if (!$already_processed) {
             // Sideloaded or direct upload that bypassed on_handle_upload
-            $opts = self::get_effective_upload_options();
             $opt_res = R2G_Optimizer::optimize_local_file($file_path, array(
-                'format'    => $opts['format'],
-                'quality'   => $opts['quality'],
-                'max_width' => $opts['max_width'],
-                'compress'  => $opts['compress'],
-                'engine'    => $opts['engine'],
+                'format'            => $opts['format'],
+                'quality'           => $opts['quality'],
+                'max_width'         => $opts['max_width'],
+                'compress'          => $opts['compress'],
+                'engine'            => $opts['engine'],
+                'client_compressed' => $opts['client_compressed'],
             ));
 
             if ($opt_res['success'] && !empty($opt_res['file_path']) && $opt_res['file_path'] !== $file_path) {
@@ -467,9 +503,9 @@ class R2G_Media_Handler {
             }
         }
 
-        // Upload final processed image to Cloudflare R2
-        if ($auto_upload) {
-            self::sync_attachment_to_r2($attachment_id, false, $metadata);
+        // Upload final processed image to Cloudflare R2 unless user explicitly selected local_only
+        if ($auto_upload && $storage_mode !== 'local_only') {
+            self::sync_attachment_to_r2($attachment_id, false, $metadata, false);
         }
 
         return $metadata;
@@ -481,9 +517,11 @@ class R2G_Media_Handler {
      * @param int $attachment_id
      * @param bool $force_reupload
      * @param array|null $metadata
+     * @param bool $is_bulk_sync When true, local files are strictly preserved as backup!
+     * @param array $batch_options Optional batch wildcard optimization options
      * @return bool
      */
-    public static function sync_attachment_to_r2($attachment_id, $force_reupload = false, $metadata = null) {
+    public static function sync_attachment_to_r2($attachment_id, $force_reupload = false, $metadata = null, $is_bulk_sync = false, $batch_options = array()) {
         $client = r2_by_grisma()->get_client();
         if (!$client || !$client->is_configured()) {
             return false;
@@ -497,6 +535,26 @@ class R2G_Media_Handler {
                 return true;
             }
             return false;
+        }
+
+        // If batch options are provided during bulk sync (wildcard conversion), apply before upload:
+        if (!empty($batch_options) && is_array($batch_options) && !empty($batch_options['format'])) {
+            $opt_res = R2G_Optimizer::optimize_local_file($file_path, $batch_options);
+            if ($opt_res['success'] && !empty($opt_res['file_path']) && $opt_res['file_path'] !== $file_path) {
+                update_attached_file($attachment_id, $opt_res['file_path']);
+                $file_path = $opt_res['file_path'];
+                if (empty($metadata)) {
+                    $metadata = wp_get_attachment_metadata($attachment_id);
+                }
+                $metadata['file'] = _wp_relative_upload_path($file_path);
+                $target_fmt = $batch_options['format'];
+                $target_mime = !empty($opt_res['mime']) ? $opt_res['mime'] : 'image/' . ($target_fmt === 'jpg' ? 'jpeg' : $target_fmt);
+                wp_update_post(array(
+                    'ID'             => $attachment_id,
+                    'post_mime_type' => $target_mime,
+                ));
+                wp_update_attachment_metadata($attachment_id, $metadata);
+            }
         }
 
         $main_r2_key = self::get_r2_key_from_path($file_path);
@@ -549,13 +607,18 @@ class R2G_Media_Handler {
         // Record in database index
         R2G_Database::mark_synced($attachment_id, $main_r2_key, $compressed_size, $original_size, $thumb_count);
 
-        // Handle "R2 Only" storage mode: remove local copies to save disk space
-        $storage_mode = get_option('r2g_storage_mode', 'both');
-        if ($storage_mode === 'r2_only') {
-            if (empty($metadata)) {
-                $metadata = wp_get_attachment_metadata($attachment_id);
+        // Handle "R2 Only" storage mode:
+        // CRITICAL DATA SAFETY RULE: NEVER delete local files during bulk sync!
+        // Local files are only deleted on single uploads if user/policy explicitly requested R2 Only.
+        if (!$is_bulk_sync) {
+            $opts = self::get_effective_upload_options();
+            $storage_mode = $opts['storage_mode'] ?? get_option('r2g_storage_mode', 'both');
+            if ($storage_mode === 'r2_only') {
+                if (empty($metadata)) {
+                    $metadata = wp_get_attachment_metadata($attachment_id);
+                }
+                self::delete_local_files($attachment_id, $file_path, $metadata);
             }
-            self::delete_local_files($attachment_id, $file_path, $metadata);
         }
 
         return true;

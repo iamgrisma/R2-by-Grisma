@@ -110,14 +110,15 @@ class R2G_Admin {
         );
 
         wp_localize_script('r2g-browser-compress-js', 'r2g_compress_config', array(
-            'engine'    => get_option('r2g_compress_engine', 'server'),
-            'workflow'  => get_option('r2g_upload_workflow', 'bar'),
-            'preset'    => get_option('r2g_active_preset', 'webp_balanced'),
-            'format'    => get_option('r2g_compress_format', 'webp'),
-            'compress'  => (int) get_option('r2g_compress_enabled', 1),
-            'quality'   => (int) get_option('r2g_compress_quality', 82),
-            'maxWidth'  => (int) get_option('r2g_max_width', 1920),
-            'presets'   => R2G_Media_Handler::get_presets(),
+            'engine'       => get_option('r2g_compress_engine', 'server'),
+            'storageMode'  => get_option('r2g_storage_mode', 'both'),
+            'workflow'     => get_option('r2g_upload_workflow', 'interceptor'),
+            'preset'       => get_option('r2g_active_preset', 'webp_balanced'),
+            'format'       => get_option('r2g_compress_format', 'webp'),
+            'compress'     => (int) get_option('r2g_compress_enabled', 1),
+            'quality'      => (int) get_option('r2g_compress_quality', 82),
+            'maxWidth'     => (int) get_option('r2g_max_width', 1920),
+            'presets'      => R2G_Media_Handler::get_presets(),
         ));
     }
 
@@ -193,7 +194,7 @@ class R2G_Admin {
                 update_option('r2g_compress_quality', max(60, min(100, (int)($_POST['r2g_compress_quality'] ?? 82))));
                 update_option('r2g_max_width', max(0, (int)($_POST['r2g_max_width'] ?? 1920)));
             }
-            update_option('r2g_upload_workflow', sanitize_text_field(wp_unslash($_POST['r2g_upload_workflow'] ?? 'bar')));
+            update_option('r2g_upload_workflow', sanitize_text_field(wp_unslash($_POST['r2g_upload_workflow'] ?? 'interceptor')));
         }
 
         add_settings_error('r2g_messages', 'r2g_saved', esc_html__('Settings saved successfully.', 'r2-by-grisma'), 'updated');
@@ -560,8 +561,8 @@ class R2G_Admin {
 
                     <!-- Section: Compression Pipeline & Presets -->
                     <div class="r2g-card">
-                        <h2><?php esc_html_e('Optimization, Conversion & Presets', 'r2-by-grisma'); ?></h2>
-                        <p class="description"><?php esc_html_e('Configure default presets for image format conversion and compression. During upload, you can seamlessly switch presets or customize on the fly.', 'r2-by-grisma'); ?></p>
+                        <h2><?php esc_html_e('Optimization, Conversion & Presets (Site Defaults)', 'r2-by-grisma'); ?></h2>
+                        <p class="description"><?php esc_html_e('These options configure your site defaults. Standard uploads use these values automatically. When uploading individual images or running bulk sync, you can easily modify or override them on the fly.', 'r2-by-grisma'); ?></p>
 
                         <table class="r2g-form-table">
                             <tr>
@@ -569,13 +570,13 @@ class R2G_Admin {
                                 <td>
                                     <select name="r2g_compress_engine" id="r2g_compress_engine" class="r2g-input" style="max-width:400px; font-weight:600;">
                                         <option value="server" <?php selected($engine, 'server'); ?>>
-                                            <?php esc_html_e('Server: PHP GD / Imagick (Recommended — Native, Instant)', 'r2-by-grisma'); ?>
+                                             <?php esc_html_e('Server: PHP GD / Imagick (Recommended — Native, Instant)', 'r2-by-grisma'); ?>
                                         </option>
                                         <option value="resmush" <?php selected($engine, 'resmush'); ?>>
                                             <?php esc_html_e('reSmush.it Free API (Auto-fallback to GD/Imagick for >5MB)', 'r2-by-grisma'); ?>
                                         </option>
                                         <option value="browser" <?php selected($engine, 'browser'); ?>>
-                                            <?php esc_html_e('Browser Edge (Client-side HTML5 Canvas)', 'r2-by-grisma'); ?>
+                                            <?php esc_html_e('Browser Edge (Client-side HTML5 Canvas — 0 Server CPU)', 'r2-by-grisma'); ?>
                                         </option>
                                         <option value="none" <?php selected($engine, 'none'); ?>>
                                             <?php esc_html_e('Raw Offload (No Compression / Lossless)', 'r2-by-grisma'); ?>
@@ -657,19 +658,19 @@ class R2G_Admin {
                                 <td>
                                     <div class="r2g-radio-group">
                                         <label class="r2g-radio-pill">
-                                            <input type="radio" name="r2g_upload_workflow" value="bar" <?php checked($workflow, 'bar'); ?> />
-                                            <span><strong><?php esc_html_e('Interactive Dropzone Toolbar (Recommended)', 'r2-by-grisma'); ?></strong> — <?php esc_html_e('Non-blocking toolbar right above the dropzone to switch preset, format, or quality with 1 click before uploading.', 'r2-by-grisma'); ?></span>
+                                            <input type="radio" name="r2g_upload_workflow" value="interceptor" <?php checked($workflow, 'interceptor'); ?> />
+                                            <span><strong><?php esc_html_e('Upload Interceptor Dialog (Recommended)', 'r2-by-grisma'); ?></strong> — <?php esc_html_e('Intercepts uploads in browser memory before sending to the server. Shows thumbnail preview, file size, dimensions, and allows changing preset, format, engine, or storage mode with 1 click.', 'r2-by-grisma'); ?></span>
                                         </label>
                                         <label class="r2g-radio-pill">
-                                            <input type="radio" name="r2g_upload_workflow" value="prompt" <?php checked($workflow, 'prompt'); ?> />
-                                            <span><strong><?php esc_html_e('Confirmation Dialog on Upload', 'r2-by-grisma'); ?></strong> — <?php esc_html_e('Pops up a confirmation dialog before each upload batch.', 'r2-by-grisma'); ?></span>
+                                            <input type="radio" name="r2g_upload_workflow" value="bar" <?php checked($workflow, 'bar'); ?> />
+                                            <span><strong><?php esc_html_e('Interactive Dropzone Toolbar', 'r2-by-grisma'); ?></strong> — <?php esc_html_e('Unified toolbar placed directly above the dropzone to adjust presets and format before dropping files.', 'r2-by-grisma'); ?></span>
                                         </label>
                                         <label class="r2g-radio-pill">
                                             <input type="radio" name="r2g_upload_workflow" value="automatic" <?php checked($workflow, 'automatic'); ?> />
-                                            <span><strong><?php esc_html_e('Silent Automatic', 'r2-by-grisma'); ?></strong> — <?php esc_html_e('Silently applies the default preset without showing upload-time controls.', 'r2-by-grisma'); ?></span>
+                                            <span><strong><?php esc_html_e('Silent Automatic', 'r2-by-grisma'); ?></strong> — <?php esc_html_e('Silently applies site defaults on upload without showing upload controls.', 'r2-by-grisma'); ?></span>
                                         </label>
                                     </div>
-                                    <p class="description"><?php esc_html_e('Control how options are presented when uploading files in the Media Library or post editor.', 'r2-by-grisma'); ?></p>
+                                    <p class="description"><?php esc_html_e('Choose how upload controls are presented. You can check "Remember choice for this session" in the interceptor dialog at any time to streamline multi-file uploads.', 'r2-by-grisma'); ?></p>
                                 </td>
                             </tr>
                         </table>
@@ -728,6 +729,49 @@ class R2G_Admin {
                     <h2><?php esc_html_e('Bulk Media Sync Engine', 'r2-by-grisma'); ?></h2>
                     <p class="description"><?php esc_html_e('Push all unsynced media attachments to Cloudflare R2 in safe batches without server timeouts.', 'r2-by-grisma'); ?></p>
 
+                    <!-- Batch Wildcard Configuration -->
+                    <div class="r2g-bulk-config-box" style="margin-bottom:18px; padding:16px; background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px;">
+                        <h3 style="margin-top:0; font-size:13px; font-weight:700; color:#0f172a; margin-bottom:10px;"><?php esc_html_e('Batch Conversion & Sync Options', 'r2-by-grisma'); ?></h3>
+                        <div style="display:flex; flex-wrap:wrap; gap:16px; align-items:center;">
+                            <div>
+                                <label style="display:block; font-size:12px; font-weight:600; color:#475569; margin-bottom:4px;"><?php esc_html_e('Optimization Preset:', 'r2-by-grisma'); ?></label>
+                                <select id="r2g-sync-preset" class="r2g-input" style="height:32px; font-size:12px; font-weight:600;">
+                                    <option value="keep_current"><?php esc_html_e('Keep Existing Format (No Re-conversion)', 'r2-by-grisma'); ?></option>
+                                    <option value="webp_balanced" selected><?php esc_html_e('WebP Balanced (82% quality, 1920px max)', 'r2-by-grisma'); ?></option>
+                                    <option value="webp_high"><?php esc_html_e('WebP High Quality (90% quality, 2560px max)', 'r2-by-grisma'); ?></option>
+                                    <option value="jpeg_balanced"><?php esc_html_e('JPEG Balanced (82% quality)', 'r2-by-grisma'); ?></option>
+                                    <option value="jpeg_high"><?php esc_html_e('JPEG High Quality (90% quality)', 'r2-by-grisma'); ?></option>
+                                    <option value="none"><?php esc_html_e('Raw Offload (Pure Offload / No Compression)', 'r2-by-grisma'); ?></option>
+                                </select>
+                            </div>
+                            <div id="r2g-sync-quality-wrap">
+                                <label style="display:block; font-size:12px; font-weight:600; color:#475569; margin-bottom:4px;"><?php esc_html_e('Quality:', 'r2-by-grisma'); ?></label>
+                                <div style="display:flex; align-items:center; gap:8px;">
+                                    <input type="range" id="r2g-sync-quality-slider" min="50" max="100" value="82" style="width:110px;" />
+                                    <span id="r2g-sync-quality-val" class="r2g-quality-badge">82%</span>
+                                </div>
+                            </div>
+                            <div>
+                                <label style="display:block; font-size:12px; font-weight:600; color:#475569; margin-bottom:4px;"><?php esc_html_e('Processing Engine:', 'r2-by-grisma'); ?></label>
+                                <select id="r2g-sync-engine" class="r2g-input" style="height:32px; font-size:12px; font-weight:600;">
+                                    <option value="server"><?php esc_html_e('Server: PHP GD / Imagick (Native Background)', 'r2-by-grisma'); ?></option>
+                                    <option value="browser"><?php esc_html_e('Browser Processing (Zero Server CPU / Cost)', 'r2-by-grisma'); ?></option>
+                                    <option value="resmush"><?php esc_html_e('reSmush.it Free API (Auto-fallback to GD)', 'r2-by-grisma'); ?></option>
+                                    <option value="none"><?php esc_html_e('Raw Offload (Lossless)', 'r2-by-grisma'); ?></option>
+                                </select>
+                            </div>
+                        </div>
+                        <div id="r2g-sync-engine-notice" style="margin-top:12px; font-size:12px; color:#64748b; line-height:1.4;">
+                            <span id="r2g-sync-notice-text"><?php esc_html_e('Server Engine: Media items are processed and pushed to R2 by PHP in safe batches of 5.', 'r2-by-grisma'); ?></span>
+                        </div>
+                    </div>
+
+                    <!-- Safety Guarantee Banner -->
+                    <div style="padding:10px 14px; background:#eff6ff; border:1px solid #bfdbfe; border-radius:6px; margin-bottom:16px; font-size:12px; color:#1e40af; display:flex; align-items:center; gap:8px;">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                        <span><strong><?php esc_html_e('Data Safety Guarantee:', 'r2-by-grisma'); ?></strong> <?php esc_html_e('Bulk sync NEVER deletes local files automatically. Your local server copies are strictly preserved until you verify and explicitly choose to clean them below.', 'r2-by-grisma'); ?></span>
+                    </div>
+
                     <div class="r2g-sync-container">
                         <div class="r2g-progress-wrap" style="display:none;" id="r2g-sync-progress-box">
                             <div class="r2g-progress-bar-bg">
@@ -750,6 +794,38 @@ class R2G_Admin {
                             <button type="button" id="r2g-btn-cancel-sync" class="button button-link-delete" style="display:none;">
                                 <?php esc_html_e('Cancel', 'r2-by-grisma'); ?>
                             </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Verified Storage Cleanup Card -->
+                <div class="r2g-card" style="margin-top: 24px; border-left: 4px solid #10b981;">
+                    <div style="display:flex; justify-content:space-between; align-items:flex-start; flex-wrap:wrap; gap:12px;">
+                        <div style="flex:1; min-width:280px;">
+                            <h2 style="margin:0 0 6px 0; color:#065f46;"><?php esc_html_e('Verified Storage Cleanup (Free Web Hosting Disk Space)', 'r2-by-grisma'); ?></h2>
+                            <p class="description" style="margin-bottom:10px;">
+                                <?php esc_html_e('Once attachments are verified on Cloudflare R2, you can safely clean the local copies from your web hosting server to save disk space. Previews and responsive images will continue loading fast from your Cloudflare CDN domain.', 'r2-by-grisma'); ?>
+                            </p>
+                            <div style="font-size:13px; color:#334155; font-weight:600; margin-bottom:12px;">
+                                <?php esc_html_e('Verified on R2 with Local Copy:', 'r2-by-grisma'); ?>
+                                <span id="r2g-verified-count" style="font-size:15px; font-weight:700; color:#059669; padding:2px 8px; background:#ecfdf5; border-radius:4px; margin-left:4px;"><?php echo esc_html($stats['verified_with_local'] ?? 0); ?></span> <?php esc_html_e('attachments', 'r2-by-grisma'); ?>
+                            </div>
+                        </div>
+                        <div>
+                            <button type="button" id="r2g-btn-clean-verified" class="button button-secondary button-large" <?php echo empty($stats['verified_with_local']) ? 'disabled' : ''; ?> style="border-color:#10b981; color:#065f46; font-weight:600;">
+                                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px; margin-right:4px;"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2M10 11v6M14 11v6"/></svg>
+                                <?php esc_html_e('Clean Verified Local Files', 'r2-by-grisma'); ?>
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="r2g-progress-wrap" style="display:none; margin-top:14px;" id="r2g-clean-progress-box">
+                        <div class="r2g-progress-bar-bg">
+                            <div class="r2g-progress-bar-fill" id="r2g-clean-progress-fill" style="width: 0%; background: linear-gradient(90deg, #10b981, #059669);"></div>
+                        </div>
+                        <div class="r2g-progress-meta">
+                            <span id="r2g-clean-status-text"><?php esc_html_e('Cleaning verified local files...', 'r2-by-grisma'); ?></span>
+                            <span id="r2g-clean-percentage">0%</span>
                         </div>
                     </div>
                 </div>

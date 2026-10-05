@@ -247,6 +247,42 @@
     let syncPaused = false;
     let syncCancelled = false;
 
+    // Live batch option changes for Bulk Sync
+    $('#r2g-sync-preset').on('change', function() {
+      const p = $(this).val();
+      if (p === 'keep_current' || p === 'none') {
+        $('#r2g-sync-quality-wrap').hide();
+      } else {
+        $('#r2g-sync-quality-wrap').show();
+        if (p === 'webp_high' || p === 'jpeg_high') {
+          $('#r2g-sync-quality-slider').val(90);
+          $('#r2g-sync-quality-val').text('90%');
+        } else if (p === 'webp_balanced' || p === 'jpeg_balanced') {
+          $('#r2g-sync-quality-slider').val(82);
+          $('#r2g-sync-quality-val').text('82%');
+        }
+      }
+    });
+
+    $('#r2g-sync-quality-slider').on('input', function() {
+      $('#r2g-sync-quality-val').text($(this).val() + '%');
+    });
+
+    $('#r2g-sync-engine').on('change', function() {
+      const eng = $(this).val();
+      const $notice = $('#r2g-sync-notice-text');
+      if (eng === 'browser') {
+        $notice.html('<strong style="color:#0284c7;">Browser Engine Active:</strong> Converts and compresses media in this browser tab using HTML5 Canvas. Zero server CPU/cost! <em>Please keep this tab open until sync finishes.</em>');
+      } else if (eng === 'resmush') {
+        $notice.text('reSmush.it Engine: Compresses via free reSmush API (auto-fallback to PHP GD/Imagick if >5MB or offline).');
+      } else if (eng === 'none') {
+        $notice.text('Lossless Engine: Pushes binary files directly to R2 without alteration.');
+      } else {
+        $notice.text('Server Engine: Media items are processed and pushed to R2 by PHP in safe batches of 5.');
+      }
+    });
+
+    // Bulk Sync Execution
     $('#r2g-btn-start-sync').on('click', function(e) {
       e.preventDefault();
       if ($(this).is(':disabled')) return;
@@ -261,6 +297,10 @@
       const $progFill = $('#r2g-sync-progress-fill');
       const $progText = $('#r2g-sync-status-text');
       const $progPct = $('#r2g-sync-percentage');
+
+      const syncPreset = $('#r2g-sync-preset').val() || 'keep_current';
+      const syncQuality = parseInt($('#r2g-sync-quality-slider').val(), 10) || 82;
+      const syncEngine = $('#r2g-sync-engine').val() || 'server';
 
       $startBtn.hide();
       $pauseBtn.show().text('Pause');
@@ -279,6 +319,9 @@
           data: {
             action: 'r2g_bulk_sync_batch',
             batch_size: 5,
+            preset: syncPreset,
+            quality: syncQuality,
+            engine: syncEngine,
             nonce: nonce,
           },
           success: function(res) {
@@ -298,6 +341,10 @@
             $('#r2g-stat-synced').text(stats.synced || 0);
             $('#r2g-stat-cloud').text(stats.cloud_only || 0);
             $('#r2g-stat-local').text(stats.local_only || 0);
+            if (stats.verified_with_local !== undefined) {
+              $('#r2g-verified-count').text(stats.verified_with_local);
+              $('#r2g-btn-clean-verified').prop('disabled', stats.verified_with_local === 0);
+            }
 
             $progFill.css('width', pct + '%');
             $progPct.text(pct + '%');
@@ -306,7 +353,7 @@
             if (res.data.done || !res.data.remaining) {
               $progFill.css('width', '100%');
               $progPct.text('100%');
-              $progText.text('All media successfully synced to Cloudflare R2!');
+              $progText.text('All media successfully synced to Cloudflare R2! Local copies preserved safely.');
               $pauseBtn.hide();
               $cancelBtn.hide();
               $startBtn.show().text('Sync Finished (Run Again)');
@@ -343,6 +390,85 @@
       $('#r2g-btn-cancel-sync').hide();
       $('#r2g-btn-start-sync').show().text('Resume Bulk Sync');
       $('#r2g-sync-status-text').text('Sync paused by user.');
+    });
+
+    // Verified Local Storage Cleanup
+    $('#r2g-btn-clean-verified').on('click', function(e) {
+      e.preventDefault();
+      if ($(this).is(':disabled')) return;
+      if (!confirm('Are you sure you want to clean local server copies for verified R2 media? Your files remain completely safe and fast on Cloudflare R2.')) {
+        return;
+      }
+
+      const $btn = $(this);
+      const $box = $('#r2g-clean-progress-box');
+      const $fill = $('#r2g-clean-progress-fill');
+      const $text = $('#r2g-clean-status-text');
+      const $pct = $('#r2g-clean-percentage');
+
+      $btn.prop('disabled', true);
+      $box.show();
+      $fill.css('width', '0%');
+      $pct.text('0%');
+      $text.text('Cleaning local copies in safe batches...');
+
+      let totalToClean = parseInt($('#r2g-verified-count').text(), 10) || 1;
+      let cleanedSoFar = 0;
+
+      function cleanBatch() {
+        $.ajax({
+          url: ajaxurl,
+          type: 'POST',
+          dataType: 'json',
+          data: {
+            action: 'r2g_bulk_clean_verified_local',
+            batch_size: 15,
+            nonce: nonce,
+          },
+          success: function(res) {
+            if (!res.success) {
+              $text.text('Error: ' + (res.data?.message || 'Cleanup failed'));
+              $btn.prop('disabled', false);
+              return;
+            }
+
+            const cleanedBatch = res.data.cleaned_count || 0;
+            const remaining = res.data.remaining || 0;
+            cleanedSoFar += cleanedBatch;
+
+            const pct = (cleanedSoFar + remaining) > 0 ? Math.min(100, Math.round((cleanedSoFar / (cleanedSoFar + remaining)) * 100)) : 100;
+            $fill.css('width', pct + '%');
+            $pct.text(pct + '%');
+            $text.text('Cleaned ' + cleanedSoFar + ' local files. ' + remaining + ' remaining...');
+
+            // Update verified count in UI
+            $('#r2g-verified-count').text(remaining);
+
+            // Update stats cards live
+            if (res.data.stats) {
+              $('#r2g-stat-synced').text(res.data.stats.synced || 0);
+              $('#r2g-stat-cloud').text(res.data.stats.cloud_only || 0);
+              $('#r2g-stat-local').text(res.data.stats.local_only || 0);
+            }
+
+            if (res.data.done || remaining === 0) {
+              $fill.css('width', '100%');
+              $pct.text('100%');
+              $text.html('<strong style="color:#059669;">✓ Verified local cleanup complete! Web hosting disk space freed.</strong>');
+              $btn.prop('disabled', true);
+              return;
+            }
+
+            setTimeout(cleanBatch, 300);
+          },
+          error: function() {
+            $text.text('Network glitch. Retrying cleanup in 3s...');
+            setTimeout(cleanBatch, 3000);
+          }
+        });
+      }
+
+      cleanBatch();
     });
 
     // 7. Maintenance & Legacy Import
