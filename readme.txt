@@ -4,7 +4,7 @@ Tags: r2, cloudflare, cloudflare r2, image optimization, webp, s3, offload media
 Requires at least: 5.8
 Tested up to: 6.7
 Requires PHP: 7.4
-Stable tag: 1.0.15
+Stable tag: 1.0.16
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -32,6 +32,13 @@ Enterprise Cloudflare R2 sync with upload-time format & compression controls, se
 4. Click **Test Connection & Verify CDN** to confirm connection.
 
 == Changelog ==
+
+= 1.0.16 =
+* Completely removed sticky dropzone toolbar from DOM: eliminates unwanted bars from the UI, keeping the Media Library and editors 100% clean and native.
+* Universal Interceptor Trigger on File Selection: opens the visual Interceptor Modal only when an image is chosen or dropped (works for Plupload multi-file upload, browser file uploader form, and Gutenberg editor).
+* Full Gutenberg Block Editor Interception: intercepts image uploads from the core Image block, Gallery block, Cover block, Media & Text block, 3rd party plugin blocks, and drag-and-drop before hitting the WordPress server.
+* Enhanced Modal Stacking: increased overlay z-index to 999999 to guarantee priority above all Gutenberg modals, dialogs, and media frames.
+* Simplified Settings: clean Visual Upload Interceptor toggle replacing redundant workflow options.
 
 = 1.0.15 =
 * Fixed unwanted popup modal on page load: rectified modal CSS display rules and Plupload bindings so the modal never displays automatically upon navigating to the dashboard or Media Library.

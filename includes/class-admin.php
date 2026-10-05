@@ -34,11 +34,19 @@ class R2G_Admin {
         add_action('admin_menu', array($this, 'register_admin_menu'));
         add_action('admin_init', array($this, 'handle_save_settings'));
         add_action('admin_enqueue_scripts', array($this, 'enqueue_admin_assets'));
+        add_action('enqueue_block_editor_assets', array($this, 'on_enqueue_block_editor_assets'));
         add_action('wp_enqueue_media', array($this, 'on_wp_enqueue_media'));
 
         // Ajax Handlers
         add_action('wp_ajax_r2g_test_connection', array($this, 'ajax_test_connection'));
         add_action('wp_ajax_r2g_fetch_buckets', array($this, 'ajax_fetch_buckets'));
+    }
+
+    /**
+     * Trigger asset enqueuing for Gutenberg block editor
+     */
+    public function on_enqueue_block_editor_assets() {
+        $this->enqueue_admin_assets('post.php');
     }
 
     /**
@@ -95,10 +103,13 @@ class R2G_Admin {
             'ajax_url' => admin_url('admin-ajax.php'),
         ));
 
-        // Enqueue Upload-Time Interceptor & Bar
+        // Enqueue Upload-Time Interceptor
         $compress_deps = array('jquery');
         if (wp_script_is('wp-media-utils', 'registered')) {
             $compress_deps[] = 'wp-media-utils';
+        }
+        if (wp_script_is('wp-api-fetch', 'registered')) {
+            $compress_deps[] = 'wp-api-fetch';
         }
 
         wp_enqueue_script(
@@ -112,7 +123,7 @@ class R2G_Admin {
         wp_localize_script('r2g-browser-compress-js', 'r2g_compress_config', array(
             'engine'       => get_option('r2g_compress_engine', 'server'),
             'storageMode'  => get_option('r2g_storage_mode', 'both'),
-            'workflow'     => get_option('r2g_upload_workflow', 'bar'),
+            'interceptor'  => (int) get_option('r2g_interceptor_enabled', 1),
             'format'       => get_option('r2g_compress_format', 'webp'),
             'compress'     => (int) get_option('r2g_compress_enabled', 1),
             'quality'      => (int) get_option('r2g_compress_quality', 82),
@@ -180,7 +191,7 @@ class R2G_Admin {
             update_option('r2g_compress_format', sanitize_text_field(wp_unslash($_POST['r2g_compress_format'] ?? 'webp')));
             update_option('r2g_compress_quality', max(50, min(100, (int)($_POST['r2g_compress_quality'] ?? 82))));
             update_option('r2g_max_width', max(0, (int)($_POST['r2g_max_width'] ?? 1920)));
-            update_option('r2g_upload_workflow', sanitize_text_field(wp_unslash($_POST['r2g_upload_workflow'] ?? 'bar')));
+            update_option('r2g_interceptor_enabled', !empty($_POST['r2g_interceptor_enabled']) ? 1 : 0);
         }
 
         add_settings_error('r2g_messages', 'r2g_saved', esc_html__('Settings saved successfully.', 'r2-by-grisma'), 'updated');
@@ -300,7 +311,7 @@ class R2G_Admin {
         $format            = get_option('r2g_compress_format', 'webp');
         $quality           = (int) get_option('r2g_compress_quality', 82);
         $max_width         = (int) get_option('r2g_max_width', 1920);
-        $workflow          = get_option('r2g_upload_workflow', 'bar');
+        $interceptor_enabled = (int) get_option('r2g_interceptor_enabled', 1);
         $engine            = get_option('r2g_compress_engine', 'server');
 
         // Stats
@@ -623,23 +634,13 @@ class R2G_Admin {
                                 </td>
                             </tr>
                             <tr>
-                                <th><?php esc_html_e('Upload-Time Controls', 'r2-by-grisma'); ?></th>
+                                <th><?php esc_html_e('Upload Interceptor', 'r2-by-grisma'); ?></th>
                                 <td>
-                                    <div class="r2g-radio-group">
-                                        <label class="r2g-radio-pill">
-                                            <input type="radio" name="r2g_upload_workflow" value="bar" <?php checked($workflow, 'bar'); ?> />
-                                            <span><strong><?php esc_html_e('Interactive Dropzone Toolbar (Recommended)', 'r2-by-grisma'); ?></strong> — <?php esc_html_e('Unified toolbar placed directly above the dropzone to adjust format, quality, engine, and storage destination before dropping files.', 'r2-by-grisma'); ?></span>
-                                        </label>
-                                        <label class="r2g-radio-pill">
-                                            <input type="radio" name="r2g_upload_workflow" value="interceptor" <?php checked($workflow, 'interceptor'); ?> />
-                                            <span><strong><?php esc_html_e('Upload Interceptor Dialog', 'r2-by-grisma'); ?></strong> — <?php esc_html_e('Intercepts uploads in browser memory before sending to the server. Shows thumbnail preview, file size, dimensions, and allows changing format, quality, engine, or storage destination in a modal dialog.', 'r2-by-grisma'); ?></span>
-                                        </label>
-                                        <label class="r2g-radio-pill">
-                                            <input type="radio" name="r2g_upload_workflow" value="automatic" <?php checked($workflow, 'automatic'); ?> />
-                                            <span><strong><?php esc_html_e('Silent Automatic', 'r2-by-grisma'); ?></strong> — <?php esc_html_e('Silently applies site defaults on upload without showing upload controls.', 'r2-by-grisma'); ?></span>
-                                        </label>
-                                    </div>
-                                    <p class="description"><?php esc_html_e('Choose how upload controls are presented. You can check "Remember choice for this session" in the interceptor dialog at any time to streamline multi-file uploads.', 'r2-by-grisma'); ?></p>
+                                    <label>
+                                        <input type="checkbox" name="r2g_interceptor_enabled" id="r2g_interceptor_enabled" value="1" <?php checked($interceptor_enabled, 1); ?> />
+                                        <strong><?php esc_html_e('Enable Visual Upload Interceptor', 'r2-by-grisma'); ?></strong>
+                                    </label>
+                                    <p class="description"><?php esc_html_e('When images are selected or dropped (in Media Library, Gutenberg block editor, or browser uploader), pauses the upload in browser memory before hitting the server. Shows thumbnail preview, dimensions, file size, and allows changing format, quality, engine, or storage destination.', 'r2-by-grisma'); ?></p>
                                 </td>
                             </tr>
                         </table>
