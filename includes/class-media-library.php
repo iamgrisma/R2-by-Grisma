@@ -53,6 +53,7 @@ class R2G_Media_Library {
         add_action('wp_ajax_r2g_download_single', array($this, 'ajax_download_single'));
         add_action('wp_ajax_r2g_delete_local_single', array($this, 'ajax_delete_local_single'));
         add_action('wp_ajax_r2g_delete_r2_single', array($this, 'ajax_delete_r2_single'));
+        add_action('wp_ajax_r2g_convert_webp_single', array($this, 'ajax_convert_webp_single'));
     }
 
     /**
@@ -367,8 +368,24 @@ class R2G_Media_Library {
         $status_label = $is_synced ? ($has_local ? 'Synced (Local + Cloud)' : 'Cloud Only (Offloaded)') : ($has_local ? 'Local Only' : 'Missing');
         $status_color = $is_synced ? '#059669' : '#475569';
 
+        $is_image = wp_attachment_is_image($id);
+        $mime_type = get_post_mime_type($id);
+        $is_webp = ($mime_type === 'image/webp');
+
         $html = '<div class="r2g-modal-meta-box" style="padding:10px 12px; background:#f8fafc; border:1px solid #e2e8f0; border-radius:6px; margin-bottom:8px;">';
         $html .= '<div style="margin-bottom:8px; font-size:12px;"><strong>Storage Status:</strong> <span style="color:' . esc_attr($status_color) . '; font-weight:600;">' . esc_html($status_label) . '</span></div>';
+
+        if ($is_image) {
+            $format_name = $is_webp ? 'WebP (Optimized)' : strtoupper(pathinfo($file_path, PATHINFO_EXTENSION) ?: 'Standard');
+            $format_color = $is_webp ? '#059669' : '#0284c7';
+            $html .= '<div style="margin-bottom:8px; font-size:12px;"><strong>Format:</strong> <span style="color:' . esc_attr($format_color) . '; font-weight:600;">' . esc_html($format_name) . '</span></div>';
+
+            if (!$is_webp) {
+                $html .= '<div style="margin-bottom:10px;">';
+                $html .= '<button type="button" class="button button-small r2g-row-action" data-action="r2g_convert_webp_single" data-id="' . esc_attr($id) . '" style="background:#0284c7; color:#fff; border-color:#0284c7; width:100%; font-weight:600;" title="' . esc_attr__('Convert image to WebP and sync to Cloudflare R2', 'r2-by-grisma') . '">⚡ ' . esc_html__('Convert to WebP & Sync to R2', 'r2-by-grisma') . '</button>';
+                $html .= '</div>';
+            }
+        }
 
         if (!empty($cdn_url)) {
             $html .= '<div style="margin-bottom:10px;">';
@@ -469,5 +486,65 @@ class R2G_Media_Library {
             wp_send_json_success(array('message' => esc_html__('File removed from Cloudflare R2 bucket.', 'r2-by-grisma')));
         }
         wp_send_json_error(array('message' => esc_html__('Failed to remove from Cloudflare R2', 'r2-by-grisma')));
+    }
+
+    /**
+     * Ajax: Convert existing attachment to WebP and sync to R2
+     */
+    public function ajax_convert_webp_single() {
+        check_ajax_referer('r2g_admin_nonce', 'nonce');
+        if (!current_user_can('upload_files')) {
+            wp_send_json_error(array('message' => 'Unauthorized'));
+        }
+
+        $id = (int)($_POST['id'] ?? 0);
+        if ($id <= 0) {
+            wp_send_json_error(array('message' => 'Invalid attachment ID'));
+        }
+
+        $file_path = get_attached_file($id);
+        if (!$file_path || !file_exists($file_path)) {
+            R2G_Media_Handler::download_from_r2_to_local($id);
+            $file_path = get_attached_file($id);
+        }
+
+        if (!$file_path || !file_exists($file_path)) {
+            wp_send_json_error(array('message' => 'File not found on server or R2.'));
+        }
+
+        $quality = (int) get_option('r2g_compress_quality', 82);
+        $max_width = (int) get_option('r2g_max_width', 1920);
+
+        $opt_res = R2G_Optimizer::optimize_local_file($file_path, array(
+            'format'    => 'webp',
+            'quality'   => $quality,
+            'max_width' => $max_width,
+            'compress'  => true,
+        ));
+
+        if ($opt_res['success'] && !empty($opt_res['file_path'])) {
+            $new_file = $opt_res['file_path'];
+            update_attached_file($id, $new_file);
+            wp_update_post(array(
+                'ID'             => $id,
+                'post_mime_type' => !empty($opt_res['mime']) ? $opt_res['mime'] : 'image/webp',
+            ));
+
+            require_once ABSPATH . 'wp-admin/includes/image.php';
+            $metadata = wp_generate_attachment_metadata($id, $new_file);
+            wp_update_attachment_metadata($id, $metadata);
+
+            R2G_Media_Handler::sync_attachment_to_r2($id, true, $metadata);
+
+            $rewriter = class_exists('R2G_URL_Rewriter') ? R2G_URL_Rewriter::instance() : null;
+            $new_url = $rewriter ? $rewriter->rewrite_url(wp_get_attachment_url($id)) : wp_get_attachment_url($id);
+
+            wp_send_json_success(array(
+                'message' => esc_html__('Successfully converted to WebP and synced to Cloudflare R2!', 'r2-by-grisma'),
+                'url'     => $new_url,
+            ));
+        }
+
+        wp_send_json_error(array('message' => 'Failed to convert image to WebP.'));
     }
 }

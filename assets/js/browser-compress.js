@@ -1,11 +1,12 @@
 /**
- * R2 by Grisma — Upload-Time Control & Preference Interceptor
+ * R2 by Grisma — Universal Upload-Time Control & Preference Interceptor
  *
- * Provides real-time upload control:
- * 1. Sets upload preferences (format, compression, quality, max width) in cookies & POST params
- * 2. Renders an interactive upload toolbar bar on media pages
- * 3. Shows a pre-upload options modal when "Prompt on Upload" is enabled
- * 4. Passes original native files to server without browser Canvas memory overhead
+ * Provides complete control over image format conversion and compression at upload time:
+ * 1. Seamlessly injects an interactive R2 Settings Toolbar inside the "Select or Upload Media" modal
+ * 2. Injects an prominent R2 Configuration Card inside the "Upload files" tab dropzone
+ * 3. Injects a toolbar bar on Media Library and Add New screens
+ * 4. Shows a pre-upload confirmation modal when "Prompt on Upload" is enabled
+ * 5. Passes chosen format & compression via cookies and Plupload multipart_params without Canvas memory overhead
  *
  * @package R2_By_Grisma
  */
@@ -32,7 +33,18 @@
       return match ? decodeURIComponent(match[2]) : null;
     },
 
+    isImage: function(f) {
+      if (!f) return false;
+      const type = (f.type || '').toLowerCase();
+      const name = (f.name || '').toLowerCase();
+      if (type.indexOf('image/') === 0 && type.indexOf('svg') === -1) return true;
+      if (name.match(/\.(jpe?g|png|webp|gif|bmp|tiff)$/i)) return true;
+      return false;
+    },
+
     init: function() {
+      const self = this;
+
       // 1. Initialize active preferences from cookies or admin presets
       this.format = this.getCookie('r2g_format') || this.config.format || 'webp';
       this.compress = this.getCookie('r2g_compress') !== null ? parseInt(this.getCookie('r2g_compress'), 10) : (this.config.compress !== undefined ? this.config.compress : 1);
@@ -41,14 +53,15 @@
 
       this.syncCookies();
 
-      // 2. Inject Upload Settings Toolbar on media screens
-      this.injectUploadBar();
+      // 2. Watch and inject UI into media modal & upload screens
+      this.injectModalHtml();
+      this.startDomWatcher();
 
       // 3. Hook upload channels
       this.hookPlupload();
       this.hookGutenberg();
       this.hookBrowserForm();
-      this.injectModalHtml();
+      this.bindControlEvents();
     },
 
     syncCookies: function() {
@@ -58,6 +71,26 @@
       this.setCookie('r2g_max_width', this.maxWidth);
     },
 
+    syncAllControls: function() {
+      this.syncCookies();
+
+      // Sync select dropdowns
+      $('.r2g-control-format, #r2g-bar-format').val(this.format);
+      $('.r2g-control-compress, #r2g-bar-compress').val(this.compress);
+
+      // Sync radio buttons
+      $(`input[name="r2g_inline_fmt"][value="${this.format}"]`).prop('checked', true);
+      $(`input[name="r2g_inline_cmp"][value="${this.compress}"]`).prop('checked', true);
+
+      // Update active pill classes
+      $('input[name="r2g_inline_fmt"]').each(function() {
+        $(this).closest('.r2g-radio-pill').toggleClass('r2g-pill-active', $(this).is(':checked'));
+      });
+      $('input[name="r2g_inline_cmp"]').each(function() {
+        $(this).closest('.r2g-radio-pill').toggleClass('r2g-pill-active', $(this).is(':checked'));
+      });
+    },
+
     isPromptMode: function() {
       if (this.config.workflow !== 'prompt') return false;
       if (sessionStorage.getItem('r2g_session_remember') === 'true') return false;
@@ -65,61 +98,135 @@
     },
 
     /**
-     * Inject Sleek Toolbar Bar in Media Library / Add New
+     * DOM Watcher: Injects controls into Media Modal tabs and upload dropzone
      */
-    injectUploadBar: function() {
+    startDomWatcher: function() {
       const self = this;
-      const renderBar = function() {
-        if ($('#r2g-upload-toolbar').length) return;
 
-        const target = $('#wp-media-grid, .upload-php #wpbody-content .wrap, .media-new-php #wpbody-content .wrap, #async-upload-wrap').first();
-        if (!target.length) return;
-
-        const barHtml = `
-          <div id="r2g-upload-toolbar" class="r2g-upload-bar">
-            <span class="r2g-upload-bar-title">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/></svg>
-              Cloudflare R2 Upload Settings:
-            </span>
-            <div class="r2g-upload-bar-item">
-              <label for="r2g-bar-format">Format:</label>
-              <select id="r2g-bar-format">
-                <option value="webp" ${self.format === 'webp' ? 'selected' : ''}>WebP (Recommended)</option>
-                <option value="original" ${self.format === 'original' ? 'selected' : ''}>Preserve Original (Keep JPG/PNG)</option>
-              </select>
+      const checkAndInject = function() {
+        // 1. Inject into "Select or Upload Media" Modal Top Tab Bar (.media-frame-router)
+        const $frameRouter = $('.media-frame-router').first();
+        if ($frameRouter.length && !$('#r2g-modal-top-bar').length) {
+          const topBarHtml = `
+            <div id="r2g-modal-top-bar" class="r2g-media-modal-top-bar">
+              <span class="r2g-top-bar-badge">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/></svg>
+                R2 Upload:
+              </span>
+              <label class="r2g-modal-bar-label">Format:
+                <select class="r2g-control-format">
+                  <option value="webp" ${self.format === 'webp' ? 'selected' : ''}>Convert to WebP</option>
+                  <option value="original" ${self.format === 'original' ? 'selected' : ''}>Preserve Original (Keep JPG/PNG)</option>
+                </select>
+              </label>
+              <label class="r2g-modal-bar-label">Compression:
+                <select class="r2g-control-compress">
+                  <option value="1" ${self.compress == 1 ? 'selected' : ''}>Compress (82%)</option>
+                  <option value="0" ${self.compress == 0 ? 'selected' : ''}>Raw Original</option>
+                </select>
+              </label>
             </div>
-            <div class="r2g-upload-bar-item">
-              <label for="r2g-bar-compress">Compression:</label>
-              <select id="r2g-bar-compress">
-                <option value="1" ${self.compress == 1 ? 'selected' : ''}>Compress & Optimize (${self.quality}%)</option>
-                <option value="0" ${self.compress == 0 ? 'selected' : ''}>Raw Original (No Compression)</option>
-              </select>
-            </div>
-            <div class="r2g-upload-bar-item">
-              <span style="font-size:11px; color:#64748b;">(Upload-time settings applied instantly)</span>
-            </div>
-          </div>
-        `;
-
-        if ($('#drag-drop-area').length) {
-          $('#drag-drop-area').before(barHtml);
-        } else {
-          target.find('h1').first().after(barHtml);
+          `;
+          $frameRouter.append(topBarHtml);
         }
 
-        $('#r2g-bar-format').on('change', function() {
-          self.format = $(this).val();
-          self.syncCookies();
-        });
+        // 2. Inject prominent Card inside the "Upload files" Tab dropzone (.uploader-inline)
+        const $uploadUi = $('.uploader-inline .upload-ui').first();
+        if ($uploadUi.length && !$('#r2g-inline-upload-card').length) {
+          const cardHtml = `
+            <div id="r2g-inline-upload-card" class="r2g-inline-upload-card">
+              <div class="r2g-inline-card-header">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/></svg>
+                <span>Cloudflare R2 Upload Settings</span>
+              </div>
+              <div class="r2g-inline-card-body">
+                <div class="r2g-inline-field">
+                  <label>Format Conversion:</label>
+                  <div class="r2g-inline-pills">
+                    <label class="r2g-radio-pill ${self.format === 'webp' ? 'r2g-pill-active' : ''}">
+                      <input type="radio" name="r2g_inline_fmt" value="webp" ${self.format === 'webp' ? 'checked' : ''}>
+                      <span><strong>Convert to WebP (Recommended)</strong></span>
+                    </label>
+                    <label class="r2g-radio-pill ${self.format === 'original' ? 'r2g-pill-active' : ''}">
+                      <input type="radio" name="r2g_inline_fmt" value="original" ${self.format === 'original' ? 'checked' : ''}>
+                      <span>Preserve Original (Keep JPG/PNG)</span>
+                    </label>
+                  </div>
+                </div>
+                <div class="r2g-inline-field">
+                  <label>Compression & Resizing:</label>
+                  <div class="r2g-inline-pills">
+                    <label class="r2g-radio-pill ${self.compress == 1 ? 'r2g-pill-active' : ''}">
+                      <input type="radio" name="r2g_inline_cmp" value="1" ${self.compress == 1 ? 'checked' : ''}>
+                      <span><strong>Compress & Optimize (82%)</strong></span>
+                    </label>
+                    <label class="r2g-radio-pill ${self.compress == 0 ? 'r2g-pill-active' : ''}">
+                      <input type="radio" name="r2g_inline_cmp" value="0" ${self.compress == 0 ? 'checked' : ''}>
+                      <span>Raw Original (No Compression)</span>
+                    </label>
+                  </div>
+                </div>
+              </div>
+            </div>
+          `;
+          $uploadUi.find('.upload-instructions').first().before(cardHtml);
+        }
 
-        $('#r2g-bar-compress').on('change', function() {
-          self.compress = parseInt($(this).val(), 10);
-          self.syncCookies();
-        });
+        // 3. Inject Toolbar on media-new.php or upload.php
+        const $standaloneTarget = $('#wp-media-grid, .upload-php #wpbody-content .wrap, .media-new-php #wpbody-content .wrap, #async-upload-wrap').first();
+        if ($standaloneTarget.length && !$('#r2g-upload-toolbar').length && !$('.media-modal').length) {
+          const barHtml = `
+            <div id="r2g-upload-toolbar" class="r2g-upload-bar">
+              <span class="r2g-upload-bar-title">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/></svg>
+                Cloudflare R2 Upload Settings:
+              </span>
+              <div class="r2g-upload-bar-item">
+                <label for="r2g-bar-format">Format:</label>
+                <select id="r2g-bar-format" class="r2g-control-format">
+                  <option value="webp" ${self.format === 'webp' ? 'selected' : ''}>WebP (Recommended)</option>
+                  <option value="original" ${self.format === 'original' ? 'selected' : ''}>Preserve Original (Keep JPG/PNG)</option>
+                </select>
+              </div>
+              <div class="r2g-upload-bar-item">
+                <label for="r2g-bar-compress">Compression:</label>
+                <select id="r2g-bar-compress" class="r2g-control-compress">
+                  <option value="1" ${self.compress == 1 ? 'selected' : ''}>Compress & Optimize (${self.quality}%)</option>
+                  <option value="0" ${self.compress == 0 ? 'selected' : ''}>Raw Original (No Compression)</option>
+                </select>
+              </div>
+            </div>
+          `;
+          if ($('#drag-drop-area').length) {
+            $('#drag-drop-area').before(barHtml);
+          } else {
+            $standaloneTarget.find('h1').first().after(barHtml);
+          }
+        }
       };
 
-      $(document).ready(renderBar);
-      $(document).on('uploaderReady', renderBar);
+      $(document).ready(checkAndInject);
+      $(document).on('uploaderReady', checkAndInject);
+
+      // Periodically check for modal opening (e.g. user clicks "Add Media")
+      setInterval(checkAndInject, 500);
+    },
+
+    /**
+     * Bind 2-way event syncing for all injected controls
+     */
+    bindControlEvents: function() {
+      const self = this;
+
+      $(document).on('change', '.r2g-control-format, input[name="r2g_inline_fmt"], #r2g-bar-format', function() {
+        self.format = $(this).val();
+        self.syncAllControls();
+      });
+
+      $(document).on('change', '.r2g-control-compress, input[name="r2g_inline_cmp"], #r2g-bar-compress', function() {
+        self.compress = parseInt($(this).val(), 10);
+        self.syncAllControls();
+      });
     },
 
     /**
@@ -139,9 +246,7 @@
             }
 
             const rawFiles = Array.from(options.filesList);
-            const imageFiles = rawFiles.filter(function(f) {
-              return f.type && f.type.indexOf('image/') === 0 && f.type.indexOf('svg') === -1;
-            });
+            const imageFiles = rawFiles.filter(f => self.isImage(f));
 
             if (!imageFiles.length || !self.isPromptMode()) {
               self.syncCookies();
@@ -160,12 +265,11 @@
               }
             };
 
-            self.showConfirmModal(imageFiles, function(chosenFormat, chosenCompress, chosenQuality, chosenMaxWidth) {
+            self.showConfirmModal(imageFiles, function(chosenFormat, chosenCompress, chosenQuality) {
               self.format = chosenFormat;
               self.compress = chosenCompress;
               self.quality = chosenQuality;
-              self.maxWidth = chosenMaxWidth;
-              self.syncCookies();
+              self.syncAllControls();
               proceed();
             }, cancel);
           };
@@ -202,7 +306,7 @@
             if (!uploader || uploader._r2g_bound) return;
             uploader._r2g_bound = true;
 
-            // Attach upload parameters to every request
+            // Attach latest upload parameters to every request
             uploader.bind('BeforeUpload', function(up, file) {
               up.settings.multipart_params = up.settings.multipart_params || {};
               up.settings.multipart_params['r2g_format'] = self.format;
@@ -212,7 +316,7 @@
             });
 
             uploader.bind('FilesAdded', function(up, files) {
-              const imageFiles = files.filter(f => f.type && f.type.startsWith('image/') && !f.type.includes('svg'));
+              const imageFiles = files.filter(f => self.isImage(f));
               if (!imageFiles.length || !self.isPromptMode()) {
                 self.syncCookies();
                 return;
@@ -221,17 +325,23 @@
               // Pause uploader queue to prompt user
               up.stop();
 
-              self.showConfirmModal(imageFiles, function(chosenFormat, chosenCompress, chosenQuality, chosenMaxWidth) {
+              self.showConfirmModal(imageFiles, function(chosenFormat, chosenCompress, chosenQuality) {
                 self.format = chosenFormat;
                 self.compress = chosenCompress;
                 self.quality = chosenQuality;
-                self.maxWidth = chosenMaxWidth;
-                self.syncCookies();
+                self.syncAllControls();
+
+                // Update params on current plupload instance
+                up.settings.multipart_params = up.settings.multipart_params || {};
+                up.settings.multipart_params['r2g_format'] = chosenFormat;
+                up.settings.multipart_params['r2g_compress'] = chosenCompress;
+                up.settings.multipart_params['r2g_quality'] = chosenQuality;
+                up.settings.multipart_params['r2g_max_width'] = self.maxWidth;
 
                 // Resume upload queue
                 up.start();
               }, function() {
-                // Cancelled
+                // Cancelled: remove pending files
                 imageFiles.forEach(f => {
                   if (up.removeFile) up.removeFile(f);
                 });
@@ -259,7 +369,7 @@
         if (!fileInput || !fileInput.files || !fileInput.files.length) return;
 
         const file = fileInput.files[0];
-        if (!file.type || file.type.indexOf('image/') !== 0 || file.type.indexOf('svg') !== -1) return;
+        if (!self.isImage(file)) return;
         if (!self.isPromptMode()) {
           self.syncCookies();
           return;
@@ -267,12 +377,11 @@
 
         e.preventDefault();
 
-        self.showConfirmModal([file], function(chosenFormat, chosenCompress, chosenQuality, chosenMaxWidth) {
+        self.showConfirmModal([file], function(chosenFormat, chosenCompress, chosenQuality) {
           self.format = chosenFormat;
           self.compress = chosenCompress;
           self.quality = chosenQuality;
-          self.maxWidth = chosenMaxWidth;
-          self.syncCookies();
+          self.syncAllControls();
 
           form._r2g_submitting = true;
           form.submit();
@@ -284,13 +393,13 @@
     },
 
     /**
-     * Inject Confirmation Modal HTML into DOM
+     * Confirmation Modal HTML
      */
     injectModalHtml: function() {
       if (document.getElementById('r2g-confirm-modal')) return;
 
       const html = `
-        <div id="r2g-confirm-modal" class="r2g-modal-overlay" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; z-index:9999999;">
+        <div id="r2g-confirm-modal" class="r2g-modal-overlay" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; z-index:99999999;">
           <div class="r2g-modal-card">
             <div class="r2g-modal-header">
               <span class="r2g-modal-badge">
@@ -396,7 +505,7 @@
         }
 
         modal.hide();
-        onProceed(chosenFormat, chosenCompress, chosenQuality, 1920);
+        onProceed(chosenFormat, chosenCompress, chosenQuality);
       });
 
       $('#r2g-modal-cancel').off('click').on('click', function() {

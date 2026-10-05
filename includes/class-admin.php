@@ -34,10 +34,18 @@ class R2G_Admin {
         add_action('admin_menu', array($this, 'register_admin_menu'));
         add_action('admin_init', array($this, 'handle_save_settings'));
         add_action('admin_enqueue_scripts', array($this, 'enqueue_admin_assets'));
+        add_action('wp_enqueue_media', array($this, 'on_wp_enqueue_media'));
 
         // Ajax Handlers
         add_action('wp_ajax_r2g_test_connection', array($this, 'ajax_test_connection'));
         add_action('wp_ajax_r2g_fetch_buckets', array($this, 'ajax_fetch_buckets'));
+    }
+
+    /**
+     * Trigger asset enqueuing when wp_enqueue_media is invoked anywhere
+     */
+    public function on_wp_enqueue_media() {
+        $this->enqueue_admin_assets('wp_enqueue_media');
     }
 
     /**
@@ -59,8 +67,11 @@ class R2G_Admin {
      * @param string $hook
      */
     public function enqueue_admin_assets($hook) {
-        $allowed = array('settings_page_r2-by-grisma', 'upload.php', 'media-new.php', 'post.php', 'post-new.php');
-        if (!in_array($hook, $allowed)) {
+        $allowed = array('settings_page_r2-by-grisma', 'upload.php', 'media-new.php', 'post.php', 'post-new.php', 'page.php', 'page-new.php', 'wp_enqueue_media');
+        $screen = function_exists('get_current_screen') ? get_current_screen() : null;
+        $is_editor_or_media = in_array($hook, $allowed) || ($screen && in_array($screen->base, array('post', 'upload', 'media', 'edit')));
+
+        if (!$is_editor_or_media && !did_action('wp_enqueue_media')) {
             return;
         }
 
@@ -84,29 +95,27 @@ class R2G_Admin {
             'ajax_url' => admin_url('admin-ajax.php'),
         ));
 
-        // Enqueue Upload-Time Interceptor & Bar on upload & post editing pages
-        if (in_array($hook, array('upload.php', 'media-new.php', 'post.php', 'post-new.php'))) {
-            $compress_deps = array('jquery');
-            if (wp_script_is('wp-media-utils', 'registered')) {
-                $compress_deps[] = 'wp-media-utils';
-            }
-
-            wp_enqueue_script(
-                'r2g-browser-compress-js',
-                R2G_URL . 'assets/js/browser-compress.js',
-                $compress_deps,
-                R2G_VERSION,
-                true
-            );
-
-            wp_localize_script('r2g-browser-compress-js', 'r2g_compress_config', array(
-                'workflow'  => get_option('r2g_upload_workflow', 'prompt'),
-                'format'    => get_option('r2g_compress_format', 'webp'),
-                'compress'  => (int) get_option('r2g_compress_enabled', 1),
-                'quality'   => (int) get_option('r2g_compress_quality', 82),
-                'maxWidth'  => (int) get_option('r2g_max_width', 1920),
-            ));
+        // Enqueue Upload-Time Interceptor & Bar
+        $compress_deps = array('jquery');
+        if (wp_script_is('wp-media-utils', 'registered')) {
+            $compress_deps[] = 'wp-media-utils';
         }
+
+        wp_enqueue_script(
+            'r2g-browser-compress-js',
+            R2G_URL . 'assets/js/browser-compress.js',
+            $compress_deps,
+            R2G_VERSION,
+            true
+        );
+
+        wp_localize_script('r2g-browser-compress-js', 'r2g_compress_config', array(
+            'workflow'  => get_option('r2g_upload_workflow', 'prompt'),
+            'format'    => get_option('r2g_compress_format', 'webp'),
+            'compress'  => (int) get_option('r2g_compress_enabled', 1),
+            'quality'   => (int) get_option('r2g_compress_quality', 82),
+            'maxWidth'  => (int) get_option('r2g_max_width', 1920),
+        ));
     }
 
     /**

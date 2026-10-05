@@ -499,3 +499,109 @@ table.media td.thumbnail img {
   border-color: #cbd5e1 !important;
 }
 
+/* Media Modal Top Toolbar Bar */
+.media-frame-router {
+  position: relative !important;
+}
+
+.r2g-media-modal-top-bar {
+  position: absolute !important;
+  right: 16px !important;
+  top: 6px !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 12px !important;
+  background: #f1f5f9 !important;
+  border: 1px solid #cbd5e1 !important;
+  padding: 4px 12px !important;
+  border-radius: 6px !important;
+  z-index: 50 !important;
+  font-size: 12px !important;
+  color: #334155 !important;
+}
+
+.r2g-top-bar-badge {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 5px !important;
+  font-weight: 700 !important;
+  color: #0369a1 !important;
+}
+
+.r2g-modal-bar-label {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 5px !important;
+  font-size: 12px !important;
+  font-weight: 500 !important;
+}
+
+.r2g-media-modal-top-bar select {
+  height: 26px !important;
+  line-height: 26px !important;
+  padding: 0 8px !important;
+  font-size: 11px !important;
+  border-radius: 4px !important;
+  border: 1px solid #94a3b8 !important;
+  background: #ffffff !important;
+  color: #0f172a !important;
+}
+
+/* Inline Upload Card in "Upload files" tab */
+.r2g-inline-upload-card {
+  max-width: 540px !important;
+  margin: 0 auto 24px auto !important;
+  background: #ffffff !important;
+  border: 1px solid #cbd5e1 !important;
+  border-radius: 8px !important;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.06) !important;
+  overflow: hidden !important;
+  text-align: left !important;
+}
+
+.r2g-inline-card-header {
+  display: flex !important;
+  align-items: center !important;
+  gap: 8px !important;
+  background: #f8fafc !important;
+  border-bottom: 1px solid #e2e8f0 !important;
+  padding: 8px 14px !important;
+  font-size: 13px !important;
+  font-weight: 700 !important;
+  color: #0369a1 !important;
+}
+
+.r2g-inline-card-body {
+  padding: 12px 16px !important;
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 12px !important;
+}
+
+.r2g-inline-field {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  gap: 12px !important;
+}
+
+.r2g-inline-field > label {
+  font-size: 12px !important;
+  font-weight: 600 !important;
+  color: #334155 !important;
+  white-space: nowrap !important;
+}
+
+.r2g-inline-pills {
+  display: flex !important;
+  gap: 8px !important;
+}
+
+.r2g-inline-pills .r2g-radio-pill {
+  font-size: 11px !important;
+  padding: 4px 10px !important;
+  border-radius: 6px !important;
+  cursor: pointer !important;
+}
+
+

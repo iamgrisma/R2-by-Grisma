@@ -182,7 +182,7 @@
       }
 
       const originalText = $btn.text();
-      $btn.prop('disabled', true).text('...');
+      $btn.prop('disabled', true).text('Working...');
 
       $.ajax({
         url: ajaxurl,
@@ -195,7 +195,17 @@
         },
         success: function(response) {
           if (response.success) {
-            window.location.reload();
+            if ($btn.closest('.media-modal, .media-frame').length) {
+              $btn.text('✓ Done!').css('background', '#059669');
+              if (response.data?.url) {
+                $btn.closest('.r2g-modal-meta-box').find('input[type="text"]').val(response.data.url);
+              }
+              setTimeout(function() {
+                $btn.prop('disabled', false).text(originalText);
+              }, 2500);
+            } else {
+              window.location.reload();
+            }
           } else {
             alert(response.data?.message || 'Action failed.');
             $btn.prop('disabled', false).text(originalText);
