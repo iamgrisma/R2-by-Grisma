@@ -31,10 +31,43 @@ class R2G_Optimizer {
     }
 
     /**
+     * Check if server has AVIF generation support
+     *
+     * @return bool
+     */
+    public static function can_generate_avif() {
+        if (function_exists('wp_image_editor_supports')) {
+            return wp_image_editor_supports(array('methods' => array('rotate', 'resize', 'save'), 'mime_type' => 'image/avif'));
+        }
+        if (function_exists('imagecreatefromavif') && function_exists('imageavif')) {
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * Get list of supported conversion formats
+     *
+     * @return array
+     */
+    public static function get_supported_formats() {
+        $formats = array(
+            'webp'     => 'WebP (' . (self::can_generate_webp() ? __('Supported', 'r2-by-grisma') : __('Unsupported', 'r2-by-grisma')) . ')',
+            'jpg'      => 'JPEG / JPG',
+            'png'      => 'PNG',
+            'original' => __('Preserve Original', 'r2-by-grisma'),
+        );
+        if (self::can_generate_avif()) {
+            $formats['avif'] = 'AVIF (' . __('Supported', 'r2-by-grisma') . ')';
+        }
+        return $formats;
+    }
+
+    /**
      * Compress and optionally convert an image file on the local server
      *
      * @param string $file_path Absolute path to the image
-     * @param array $options [ 'format' => 'webp'|'original'|'none', 'quality' => 82, 'max_width' => 1920, 'compress' => bool ]
+     * @param array $options [ 'format' => 'webp'|'jpg'|'jpeg'|'png'|'original', 'quality' => 82, 'max_width' => 1920, 'compress' => bool ]
      * @return array [ 'success' => bool, 'file_path' => string, 'mime' => string, 'width' => int, 'height' => int, 'bytes_saved' => int ]
      */
     public static function optimize_local_file($file_path, $options = array()) {
@@ -42,13 +75,34 @@ class R2G_Optimizer {
             return array('success' => false, 'file_path' => $file_path, 'mime' => '', 'width' => 0, 'height' => 0, 'bytes_saved' => 0);
         }
 
-        $format = $options['format'] ?? 'webp';
+        $format = strtolower($options['format'] ?? 'webp');
+        if ($format === 'jpeg') {
+            $format = 'jpg';
+        }
         $compress = isset($options['compress']) ? (bool)$options['compress'] : true;
         $quality = (int)($options['quality'] ?? 82);
         $max_width = (int)($options['max_width'] ?? 1920);
 
-        // If compression is disabled and format is not webp, nothing to do
-        if (!$compress && $format !== 'webp') {
+        $path_info = pathinfo($file_path);
+        $current_ext = strtolower($path_info['extension'] ?? '');
+        if ($current_ext === 'jpeg') {
+            $current_ext = 'jpg';
+        }
+
+        // Determine if format conversion is requested and differs from current
+        $needs_format_change = false;
+        if ($format === 'webp' && $current_ext !== 'webp' && self::can_generate_webp()) {
+            $needs_format_change = true;
+        } elseif ($format === 'jpg' && $current_ext !== 'jpg') {
+            $needs_format_change = true;
+        } elseif ($format === 'png' && $current_ext !== 'png') {
+            $needs_format_change = true;
+        } elseif ($format === 'avif' && $current_ext !== 'avif' && self::can_generate_avif()) {
+            $needs_format_change = true;
+        }
+
+        // If no format change, no compression, and no resize, nothing to do
+        if (!$needs_format_change && !$compress && $max_width <= 0) {
             return array('success' => true, 'file_path' => $file_path, 'mime' => '', 'width' => 0, 'height' => 0, 'bytes_saved' => 0);
         }
 
@@ -70,8 +124,7 @@ class R2G_Optimizer {
             $editor->resize($max_width, null, false);
         }
 
-        // Determine target mime and file path
-        $path_info = pathinfo($file_path);
+        // Determine target mime and filename
         $dirname = $path_info['dirname'];
         $clean_filename = preg_replace('/-scaled$/i', '', $path_info['filename']);
 
@@ -81,6 +134,27 @@ class R2G_Optimizer {
         if ($format === 'webp' && self::can_generate_webp()) {
             $target_mime = 'image/webp';
             $target_name = $clean_filename . '.webp';
+            if (file_exists($dirname . '/' . $target_name) && ($dirname . '/' . $target_name) !== $file_path) {
+                $target_name = wp_unique_filename($dirname, $target_name);
+            }
+            $target_file = $dirname . '/' . $target_name;
+        } elseif ($format === 'jpg') {
+            $target_mime = 'image/jpeg';
+            $target_name = $clean_filename . '.jpg';
+            if (file_exists($dirname . '/' . $target_name) && ($dirname . '/' . $target_name) !== $file_path) {
+                $target_name = wp_unique_filename($dirname, $target_name);
+            }
+            $target_file = $dirname . '/' . $target_name;
+        } elseif ($format === 'png') {
+            $target_mime = 'image/png';
+            $target_name = $clean_filename . '.png';
+            if (file_exists($dirname . '/' . $target_name) && ($dirname . '/' . $target_name) !== $file_path) {
+                $target_name = wp_unique_filename($dirname, $target_name);
+            }
+            $target_file = $dirname . '/' . $target_name;
+        } elseif ($format === 'avif' && self::can_generate_avif()) {
+            $target_mime = 'image/avif';
+            $target_name = $clean_filename . '.avif';
             if (file_exists($dirname . '/' . $target_name) && ($dirname . '/' . $target_name) !== $file_path) {
                 $target_name = wp_unique_filename($dirname, $target_name);
             }
@@ -95,7 +169,7 @@ class R2G_Optimizer {
         $final_path = $saved['path'] ?? $target_file;
         $new_size = file_exists($final_path) ? filesize($final_path) : $original_size;
 
-        // If converted to webp and distinct from original, delete original file
+        // If converted to a new format/file and distinct from original, delete old original file
         if ($final_path !== $file_path && file_exists($file_path)) {
             @unlink($file_path);
         }

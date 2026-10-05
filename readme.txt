@@ -4,7 +4,7 @@ Tags: r2, cloudflare, cloudflare r2, image optimization, webp, s3, offload media
 Requires at least: 5.8
 Tested up to: 6.7
 Requires PHP: 7.4
-Stable tag: 1.0.11
+Stable tag: 1.0.12
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -16,7 +16,8 @@ Enterprise Cloudflare R2 sync with upload-time format & compression controls, se
 
 ### Key Highlights
 * **Zero Vendor SDK Bloat:** Pure PHP AWS SigV4 implementation (<100KB footprint instead of 50MB AWS SDKs).
-* **Upload-Time Control:** Preset defaults in Settings with full freedom to override format (WebP vs Preserve Original) and compression per upload.
+* **Upload-Time Control:** Preset defaults in Settings with full freedom to override format (WebP, JPEG, PNG, Original) and compression per upload.
+* **Conversion Presets:** Ready-made presets (WebP Balanced, WebP High, JPEG Balanced, JPEG High, Keep Original, Raw Lossless, Custom).
 * **Streamlined Server-Side Processing:** Native WebP conversion and JPEG/PNG optimization using GD/Imagick editors with zero browser freezing.
 * **Universal Custom CDN Routing:** Rewrites URLs and responsive `srcset` for both Headless REST API (Astro, Next.js) and standard WordPress monolithic themes.
 * **Minimalist UI:** Clean modern status badges (Cloud, Synced, Local, Missing) with responsive controls.
@@ -27,3 +28,12 @@ Enterprise Cloudflare R2 sync with upload-time format & compression controls, se
 2. Activate the plugin through the 'Plugins' menu in WordPress.
 3. Navigate to **Settings -> R2 by Grisma** and enter your Cloudflare R2 credentials.
 4. Click **Test Connection & Verify CDN** to confirm connection.
+
+== Changelog ==
+
+= 1.0.12 =
+* Added conversion & compression presets (WebP Balanced, WebP High, JPEG Balanced, JPEG High, Keep Original, Raw Lossless, Custom).
+* Added interactive upload-time format switching (WebP, JPG, PNG, Original) and compression slider directly in Media Modal & Uploader.
+* Added non-blocking Plupload & REST API parameter passing to eliminate upload queue stalls.
+* Enhanced Cloudflare R2 SigV4 client by suppressing HTTP 100-continue header for robust PUT operations.
+* Improved custom CDN URL and responsive srcset rewriting for all upload directory structures.

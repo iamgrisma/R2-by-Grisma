@@ -420,7 +420,30 @@
       });
     });
 
-    // 8. Thumbnail Auto-healing: Fallback from broken thumbnail size to full CDN image
+    // 8. Preset Dropdown Change & Slider Sync in Settings Tab
+    $('#r2g_active_preset').on('change', function() {
+      const presetKey = $(this).val();
+      const presets = window.r2g_compress_config?.presets || {};
+      if (presets[presetKey]) {
+        const p = presets[presetKey];
+        $('input[name="r2g_compress_format"][value="' + p.format + '"]').prop('checked', true);
+        $('#r2g_compress_enabled').prop('checked', p.compress == 1);
+        $('#r2g_compress_quality').val(p.quality);
+        $('#r2g_compress_quality_slider').val(p.quality);
+        $('#r2g_max_width').val(p.max_width);
+        $('#r2g-preset-desc').text(p.description);
+      }
+    });
+
+    // Quality slider and number input 2-way sync
+    $('#r2g_compress_quality_slider').on('input', function() {
+      $('#r2g_compress_quality').val($(this).val());
+    });
+    $('#r2g_compress_quality').on('input', function() {
+      $('#r2g_compress_quality_slider').val($(this).val());
+    });
+
+    // 9. Thumbnail Auto-healing: Fallback from broken thumbnail size to full CDN image
     $('table.media img, .media-icon img').on('error', function() {
       const $img = $(this);
       const src = $img.attr('src');

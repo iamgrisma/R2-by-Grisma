@@ -116,6 +116,20 @@ class R2G_Client {
         // Payload hash (sha256)
         $payload_hash = hash('sha256', $payload);
 
+        // Ensure Content-Type is set for PUT/POST so cURL doesn't add application/x-www-form-urlencoded
+        if (in_array(strtoupper($method), array('PUT', 'POST'))) {
+            $has_content_type = false;
+            foreach ($extra_headers as $k => $v) {
+                if (strtolower($k) === 'content-type') {
+                    $has_content_type = true;
+                    break;
+                }
+            }
+            if (!$has_content_type) {
+                $extra_headers['Content-Type'] = 'application/octet-stream';
+            }
+        }
+
         // Canonical Headers
         $canonical_headers_arr = array(
             'host'                 => $host,
@@ -168,6 +182,7 @@ class R2G_Client {
             "x-amz-date: {$date_time}",
             "x-amz-content-sha256: {$payload_hash}",
             "Authorization: {$auth_header}",
+            "Expect:", // Crucial: Disable 100-continue which causes Cloudflare R2 timeouts/signature errors on PUT
         );
 
         foreach ($extra_headers as $k => $v) {
@@ -180,7 +195,8 @@ class R2G_Client {
         curl_setopt($ch, CURLOPT_HTTPHEADER, $http_headers);
         curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
         curl_setopt($ch, CURLOPT_FOLLOWLOCATION, false);
-        curl_setopt($ch, CURLOPT_TIMEOUT, 30);
+        curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 15);
+        curl_setopt($ch, CURLOPT_TIMEOUT, 60);
         curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
 
         if (in_array(strtoupper($method), array('PUT', 'POST'))) {

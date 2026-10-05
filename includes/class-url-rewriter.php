@@ -67,7 +67,13 @@ class R2G_URL_Rewriter {
      * @return string
      */
     public function get_cdn_base() {
-        $domain = get_option('r2g_custom_domain', '');
+        $domain = trim(get_option('r2g_custom_domain', ''));
+        if (empty($domain)) {
+            return '';
+        }
+        if (strpos($domain, 'http://') !== 0 && strpos($domain, 'https://') !== 0) {
+            $domain = 'https://' . $domain;
+        }
         return rtrim($domain, '/');
     }
 
@@ -123,6 +129,7 @@ class R2G_URL_Rewriter {
 
     /**
      * Rewrite any WordPress uploads URL to Custom R2 CDN URL
+     * Respects user-configured storage path structure (wp_content, uploads_only, date_only, custom)
      *
      * @param string $url
      * @return string
@@ -144,17 +151,50 @@ class R2G_URL_Rewriter {
 
         $uploads = wp_upload_dir();
         $baseurl = $uploads['baseurl'];
+        $structure = get_option('r2g_path_structure', 'wp_content');
+        $custom_prefix = trim(get_option('r2g_path_prefix', ''), '/');
 
         // Standard uploads replace
         if (strpos($url, $baseurl) === 0) {
-            $rel = substr($url, strlen($baseurl));
-            return $cdn_base . '/wp-content/uploads' . $rel;
+            $rel = ltrim(substr($url, strlen($baseurl)), '/');
+            switch ($structure) {
+                case 'uploads_only':
+                    $key = 'uploads/' . $rel;
+                    break;
+                case 'date_only':
+                    $key = $rel;
+                    break;
+                case 'custom':
+                    $key = (!empty($custom_prefix) ? $custom_prefix . '/' : '') . $rel;
+                    break;
+                case 'wp_content':
+                default:
+                    $key = 'wp-content/uploads/' . $rel;
+                    break;
+            }
+            return $cdn_base . '/' . $key;
         }
 
         // Host replacement fallback for wp-content/uploads
         $parsed = parse_url($url);
         if (!empty($parsed['path']) && strpos($parsed['path'], '/wp-content/uploads/') !== false) {
-            return $cdn_base . $parsed['path'];
+            $rel = ltrim(substr($parsed['path'], strpos($parsed['path'], '/wp-content/uploads/') + 20), '/');
+            switch ($structure) {
+                case 'uploads_only':
+                    $key = 'uploads/' . $rel;
+                    break;
+                case 'date_only':
+                    $key = $rel;
+                    break;
+                case 'custom':
+                    $key = (!empty($custom_prefix) ? $custom_prefix . '/' : '') . $rel;
+                    break;
+                case 'wp_content':
+                default:
+                    $key = 'wp-content/uploads/' . $rel;
+                    break;
+            }
+            return $cdn_base . '/' . $key;
         }
 
         return $url;
@@ -169,6 +209,10 @@ class R2G_URL_Rewriter {
      */
     public function filter_attachment_url($url, $post_id) {
         if ($this->should_rewrite_attachment($post_id)) {
+            $key = get_post_meta($post_id, '_r2g_key', true);
+            if (!empty($key)) {
+                return $this->get_cdn_base() . '/' . ltrim($key, '/');
+            }
             return $this->rewrite_url($url);
         }
         return $url;
@@ -211,10 +255,19 @@ class R2G_URL_Rewriter {
 
         if ($upload_sizes_mode === 'all' && $has_uploaded_thumbs && is_string($size) && !empty($meta['sizes'][$size]['file'])) {
             $data = $meta['sizes'][$size];
-            $img_url = path_join(dirname($img_url), $data['file']);
+            $main_key = get_post_meta($id, '_r2g_key', true);
+            if (!empty($main_key)) {
+                $dir_key = dirname($main_key);
+                $thumb_key = ($dir_key !== '.' && $dir_key !== '') ? $dir_key . '/' . $data['file'] : $data['file'];
+                $cdn_thumb_url = $this->get_cdn_base() . '/' . ltrim($thumb_key, '/');
+            } else {
+                $cdn_thumb_url = path_join(dirname($img_url), $data['file']);
+                $cdn_thumb_url = $this->rewrite_url($cdn_thumb_url);
+            }
             $width = isset($data['width']) ? $data['width'] : 0;
             $height = isset($data['height']) ? $data['height'] : 0;
             $is_intermediate = true;
+            return array($cdn_thumb_url, $width, $height, $is_intermediate);
         } elseif (is_string($size) && !empty($meta['sizes'][$size])) {
             // Thumbnails were not uploaded to R2 (or original-only mode): serve main CDN image with requested dimensions so it never 404s
             $data = $meta['sizes'][$size];

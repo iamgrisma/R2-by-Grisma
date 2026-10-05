@@ -3,7 +3,7 @@
  * Plugin Name: R2 by Grisma
  * Plugin URI: https://grisma.com.np
  * Description: Enterprise Cloudflare R2 sync with client-side Browser Edge compression, on-site WebP conversion, custom CDN delivery, and zero vendor bloat.
- * Version: 1.0.11
+ * Version: 1.0.12
  * Author: Grisma
  * Author URI: https://grisma.com.np
  * License: GPL v2 or later
@@ -19,7 +19,7 @@ if (!defined('ABSPATH')) {
 }
 
 // Define Constants
-define('R2G_VERSION', '1.0.11');
+define('R2G_VERSION', '1.0.12');
 define('R2G_FILE', __FILE__);
 define('R2G_PATH', plugin_dir_path(__FILE__));
 define('R2G_URL', plugin_dir_url(__FILE__));
@@ -97,8 +97,11 @@ class R2_By_Grisma {
             if (!get_option('r2g_max_width')) {
                 update_option('r2g_max_width', 1920);
             }
+            if (!get_option('r2g_active_preset')) {
+                update_option('r2g_active_preset', 'webp_balanced');
+            }
             if (!get_option('r2g_upload_workflow')) {
-                update_option('r2g_upload_workflow', 'prompt');
+                update_option('r2g_upload_workflow', 'bar');
             }
             update_option('r2g_v109_migrated', 1);
         }
@@ -182,6 +185,12 @@ register_activation_hook(__FILE__, function() {
     }
     if (!get_option('r2g_max_width')) {
         add_option('r2g_max_width', 1920);
+    }
+    if (!get_option('r2g_active_preset')) {
+        add_option('r2g_active_preset', 'webp_balanced');
+    }
+    if (!get_option('r2g_upload_workflow')) {
+        add_option('r2g_upload_workflow', 'bar');
     }
     if (get_option('r2g_auto_upload') === false) {
         add_option('r2g_auto_upload', 1);

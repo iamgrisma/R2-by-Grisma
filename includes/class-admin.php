@@ -110,11 +110,13 @@ class R2G_Admin {
         );
 
         wp_localize_script('r2g-browser-compress-js', 'r2g_compress_config', array(
-            'workflow'  => get_option('r2g_upload_workflow', 'prompt'),
+            'workflow'  => get_option('r2g_upload_workflow', 'bar'),
+            'preset'    => get_option('r2g_active_preset', 'webp_balanced'),
             'format'    => get_option('r2g_compress_format', 'webp'),
             'compress'  => (int) get_option('r2g_compress_enabled', 1),
             'quality'   => (int) get_option('r2g_compress_quality', 82),
             'maxWidth'  => (int) get_option('r2g_max_width', 1920),
+            'presets'   => R2G_Media_Handler::get_presets(),
         ));
     }
 
@@ -149,9 +151,9 @@ class R2G_Admin {
                 update_option('r2g_secret_key', $encrypted);
             }
 
-            // Custom CDN Domain
+            // Custom CDN Domain / Public URL
             $domain = trim(sanitize_text_field(wp_unslash($_POST['r2g_custom_domain'] ?? '')));
-            if (!empty($domain) && strpos($domain, 'http') !== 0) {
+            if (!empty($domain) && strpos($domain, 'http://') !== 0 && strpos($domain, 'https://') !== 0) {
                 $domain = 'https://' . $domain;
             }
             update_option('r2g_custom_domain', rtrim($domain, '/'));
@@ -172,12 +174,24 @@ class R2G_Admin {
             update_option('r2g_delete_from_r2', !empty($_POST['r2g_delete_from_r2']) ? 1 : 0);
             update_option('r2g_storage_mode', sanitize_text_field(wp_unslash($_POST['r2g_storage_mode'] ?? 'both')));
 
-            // Compression & Format Presets
-            update_option('r2g_compress_enabled', !empty($_POST['r2g_compress_enabled']) ? 1 : 0);
-            update_option('r2g_compress_format', sanitize_text_field(wp_unslash($_POST['r2g_compress_format'] ?? 'webp')));
-            update_option('r2g_compress_quality', max(60, min(100, (int)($_POST['r2g_compress_quality'] ?? 82))));
-            update_option('r2g_max_width', max(0, (int)($_POST['r2g_max_width'] ?? 1920)));
-            update_option('r2g_upload_workflow', sanitize_text_field(wp_unslash($_POST['r2g_upload_workflow'] ?? 'prompt')));
+            // Presets & Compression
+            $preset = sanitize_text_field(wp_unslash($_POST['r2g_active_preset'] ?? 'webp_balanced'));
+            update_option('r2g_active_preset', $preset);
+
+            $presets = R2G_Media_Handler::get_presets();
+            if ($preset !== 'custom' && isset($presets[$preset])) {
+                $p = $presets[$preset];
+                update_option('r2g_compress_format', $p['format']);
+                update_option('r2g_compress_enabled', $p['compress']);
+                update_option('r2g_compress_quality', $p['quality']);
+                update_option('r2g_max_width', $p['max_width']);
+            } else {
+                update_option('r2g_compress_enabled', !empty($_POST['r2g_compress_enabled']) ? 1 : 0);
+                update_option('r2g_compress_format', sanitize_text_field(wp_unslash($_POST['r2g_compress_format'] ?? 'webp')));
+                update_option('r2g_compress_quality', max(60, min(100, (int)($_POST['r2g_compress_quality'] ?? 82))));
+                update_option('r2g_max_width', max(0, (int)($_POST['r2g_max_width'] ?? 1920)));
+            }
+            update_option('r2g_upload_workflow', sanitize_text_field(wp_unslash($_POST['r2g_upload_workflow'] ?? 'bar')));
         }
 
         add_settings_error('r2g_messages', 'r2g_saved', esc_html__('Settings saved successfully.', 'r2-by-grisma'), 'updated');
@@ -293,11 +307,13 @@ class R2G_Admin {
         $rewrite_urls  = (int) get_option('r2g_rewrite_urls', 1);
         $del_from_r2   = (int) get_option('r2g_delete_from_r2', 1);
         $storage_mode      = get_option('r2g_storage_mode', 'both');
+        $active_preset     = get_option('r2g_active_preset', 'webp_balanced');
+        $presets           = R2G_Media_Handler::get_presets();
         $compress_enabled  = (int) get_option('r2g_compress_enabled', 1);
         $format            = get_option('r2g_compress_format', 'webp');
         $quality           = (int) get_option('r2g_compress_quality', 82);
         $max_width         = (int) get_option('r2g_max_width', 1920);
-        $workflow          = get_option('r2g_upload_workflow', 'prompt');
+        $workflow          = get_option('r2g_upload_workflow', 'bar');
 
         // Stats
         $stats = class_exists('R2G_Database') ? R2G_Database::get_stats() : array();
@@ -539,46 +555,72 @@ class R2G_Admin {
                         </table>
                     </div>
 
-                    <!-- Section: Compression Pipeline -->
+                    <!-- Section: Compression Pipeline & Presets -->
                     <div class="r2g-card">
-                        <h2><?php esc_html_e('Optimization & Format Presets', 'r2-by-grisma'); ?></h2>
-                        <p class="description"><?php esc_html_e('Define default presets for compression and formats. You can also override these per upload.', 'r2-by-grisma'); ?></p>
+                        <h2><?php esc_html_e('Optimization, Conversion & Presets', 'r2-by-grisma'); ?></h2>
+                        <p class="description"><?php esc_html_e('Configure default presets for image format conversion and compression. During upload, you can seamlessly switch presets or customize on the fly.', 'r2-by-grisma'); ?></p>
 
                         <table class="r2g-form-table">
                             <tr>
-                                <th><?php esc_html_e('Format Conversion Preset', 'r2-by-grisma'); ?></th>
+                                <th><label for="r2g_active_preset"><?php esc_html_e('Default Optimization Preset', 'r2-by-grisma'); ?></label></th>
+                                <td>
+                                    <select name="r2g_active_preset" id="r2g_active_preset" class="r2g-input" style="max-width:400px; font-weight:600;">
+                                        <?php foreach ($presets as $p_id => $p_data): ?>
+                                            <option value="<?php echo esc_attr($p_id); ?>" <?php selected($active_preset, $p_id); ?>>
+                                                <?php echo esc_html($p_data['name']); ?>
+                                            </option>
+                                        <?php endforeach; ?>
+                                    </select>
+                                    <p class="description" id="r2g-preset-desc">
+                                        <?php echo esc_html($presets[$active_preset]['description'] ?? ''); ?>
+                                    </p>
+                                </td>
+                            </tr>
+                            <tr>
+                                <th><?php esc_html_e('Target Format', 'r2-by-grisma'); ?></th>
                                 <td>
                                     <div class="r2g-radio-group">
                                         <label class="r2g-radio-pill">
                                             <input type="radio" name="r2g_compress_format" value="webp" <?php checked($format, 'webp'); ?> />
-                                            <span><strong><?php esc_html_e('Convert to WebP (Recommended — 60-80% smaller)', 'r2-by-grisma'); ?></strong></span>
+                                            <span><strong><?php esc_html_e('WebP (Recommended — Smallest size, crisp quality)', 'r2-by-grisma'); ?></strong></span>
+                                        </label>
+                                        <label class="r2g-radio-pill">
+                                            <input type="radio" name="r2g_compress_format" value="jpg" <?php checked(in_array($format, array('jpg', 'jpeg')), true); ?> />
+                                            <span><strong><?php esc_html_e('JPEG / JPG (Universal compatibility)', 'r2-by-grisma'); ?></strong></span>
+                                        </label>
+                                        <label class="r2g-radio-pill">
+                                            <input type="radio" name="r2g_compress_format" value="png" <?php checked($format, 'png'); ?> />
+                                            <span><?php esc_html_e('PNG (Crisp graphics & transparency)', 'r2-by-grisma'); ?></span>
                                         </label>
                                         <label class="r2g-radio-pill">
                                             <input type="radio" name="r2g_compress_format" value="original" <?php checked($format, 'original'); ?> />
-                                            <span><?php esc_html_e('Preserve Original Format (Keep JPG / PNG)', 'r2-by-grisma'); ?></span>
+                                            <span><?php esc_html_e('Preserve Original Format (Keep upload format)', 'r2-by-grisma'); ?></span>
                                         </label>
                                     </div>
-                                    <p class="description"><?php esc_html_e('WebP images load faster and reduce bandwidth on Cloudflare R2.', 'r2-by-grisma'); ?></p>
+                                    <p class="description"><?php esc_html_e('Choose what format to convert images to. You can easily switch this during individual uploads.', 'r2-by-grisma'); ?></p>
                                 </td>
                             </tr>
                             <tr>
                                 <th><?php esc_html_e('Image Compression', 'r2-by-grisma'); ?></th>
                                 <td>
                                     <label>
-                                        <input type="checkbox" name="r2g_compress_enabled" value="1" <?php checked($compress_enabled, 1); ?> />
+                                        <input type="checkbox" name="r2g_compress_enabled" id="r2g_compress_enabled" value="1" <?php checked($compress_enabled, 1); ?> />
                                         <strong><?php esc_html_e('Enable Image Compression & Resizing', 'r2-by-grisma'); ?></strong>
                                     </label>
-                                    <p class="description"><?php esc_html_e('Uses PHP GD / Imagick to compress images before offloading to Cloudflare R2.', 'r2-by-grisma'); ?></p>
+                                    <p class="description"><?php esc_html_e('Optimizes images and generated thumbnails with PHP GD / Imagick before sending to Cloudflare R2.', 'r2-by-grisma'); ?></p>
                                 </td>
                             </tr>
-                            <tr>
+                            <tr id="r2g-row-quality">
                                 <th><label for="r2g_compress_quality"><?php esc_html_e('Compression Quality', 'r2-by-grisma'); ?></label></th>
                                 <td>
-                                    <input type="number" id="r2g_compress_quality" name="r2g_compress_quality" value="<?php echo esc_attr($quality); ?>" min="60" max="100" class="r2g-input" style="max-width:120px;" /> %
+                                    <div style="display:flex; align-items:center; gap:10px; max-width:320px;">
+                                        <input type="range" id="r2g_compress_quality_slider" min="60" max="100" value="<?php echo esc_attr($quality); ?>" style="flex:1;" />
+                                        <input type="number" id="r2g_compress_quality" name="r2g_compress_quality" value="<?php echo esc_attr($quality); ?>" min="60" max="100" class="r2g-input" style="width:70px;" /> %
+                                    </div>
                                     <p class="description"><?php esc_html_e('82% offers the optimal sweet spot between crisp visual detail and lightweight byte size.', 'r2-by-grisma'); ?></p>
                                 </td>
                             </tr>
-                            <tr>
+                            <tr id="r2g-row-max-width">
                                 <th><label for="r2g_max_width"><?php esc_html_e('Max Image Width', 'r2-by-grisma'); ?></label></th>
                                 <td>
                                     <input type="number" id="r2g_max_width" name="r2g_max_width" value="<?php echo esc_attr($max_width); ?>" min="0" step="100" class="r2g-input" style="max-width:140px;" /> px
@@ -586,19 +628,23 @@ class R2G_Admin {
                                 </td>
                             </tr>
                             <tr>
-                                <th><?php esc_html_e('Upload-Time Workflow', 'r2-by-grisma'); ?></th>
+                                <th><?php esc_html_e('Upload-Time Controls', 'r2-by-grisma'); ?></th>
                                 <td>
                                     <div class="r2g-radio-group">
                                         <label class="r2g-radio-pill">
+                                            <input type="radio" name="r2g_upload_workflow" value="bar" <?php checked($workflow, 'bar'); ?> />
+                                            <span><strong><?php esc_html_e('Interactive Dropzone Toolbar (Recommended)', 'r2-by-grisma'); ?></strong> — <?php esc_html_e('Non-blocking toolbar right above the dropzone to switch preset, format, or quality with 1 click before uploading.', 'r2-by-grisma'); ?></span>
+                                        </label>
+                                        <label class="r2g-radio-pill">
                                             <input type="radio" name="r2g_upload_workflow" value="prompt" <?php checked($workflow, 'prompt'); ?> />
-                                            <span><strong><?php esc_html_e('Prompt on Upload (Allow choosing format & compression per upload)', 'r2-by-grisma'); ?></strong></span>
+                                            <span><strong><?php esc_html_e('Confirmation Dialog on Upload', 'r2-by-grisma'); ?></strong> — <?php esc_html_e('Pops up a confirmation dialog before each upload batch.', 'r2-by-grisma'); ?></span>
                                         </label>
                                         <label class="r2g-radio-pill">
                                             <input type="radio" name="r2g_upload_workflow" value="automatic" <?php checked($workflow, 'automatic'); ?> />
-                                            <span><?php esc_html_e('Automatic (Silently apply preset settings without prompts)', 'r2-by-grisma'); ?></span>
+                                            <span><strong><?php esc_html_e('Silent Automatic', 'r2-by-grisma'); ?></strong> — <?php esc_html_e('Silently applies the default preset without showing upload-time controls.', 'r2-by-grisma'); ?></span>
                                         </label>
                                     </div>
-                                    <p class="description"><?php esc_html_e('Prompt mode lets you decide whether to convert to WebP or preserve original format whenever you upload.', 'r2-by-grisma'); ?></p>
+                                    <p class="description"><?php esc_html_e('Control how options are presented when uploading files in the Media Library or post editor.', 'r2-by-grisma'); ?></p>
                                 </td>
                             </tr>
                         </table>
