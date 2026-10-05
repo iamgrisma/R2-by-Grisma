@@ -245,6 +245,45 @@ class R2G_Media_Handler {
     private static $processed_files = array();
 
     /**
+     * What the optimizer really did for files processed in this request, keyed by final path.
+     * Persisted to the attachment (_r2g_opt_info) once its ID exists.
+     *
+     * @var array
+     */
+    private static $opt_info = array();
+
+    /**
+     * Mark a file as already optimized so on_generate_metadata does not run the engine a second time.
+     *
+     * @param string $file_path
+     */
+    public static function mark_processed($file_path) {
+        self::$processed_files[$file_path] = true;
+    }
+
+    /**
+     * Build the compact optimization record stored on the attachment.
+     *
+     * @param array $opt_res   Result of R2G_Optimizer::optimize_local_file()
+     * @param array $opts      Effective upload options
+     * @param int   $orig_size Bytes before optimization
+     * @param string $final_path Final file path
+     * @return array
+     */
+    public static function build_opt_info($opt_res, $opts, $orig_size, $final_path) {
+        clearstatcache(true, $final_path);
+        $final_size = file_exists($final_path) ? (int) filesize($final_path) : 0;
+        return array(
+            'engine_requested' => $opts['engine'] ?? '',
+            'engine_used'      => $opt_res['engine_used'] ?? '',
+            'note'             => $opt_res['engine_note'] ?? '',
+            'orig_bytes'       => (int) $orig_size,
+            'final_bytes'      => $final_size,
+            'time'             => current_time('mysql'),
+        );
+    }
+
+    /**
      * Resolve effective upload preferences with strict hierarchy:
      * 1. Explicit POST parameters (e.g. from Plupload / FormData / AJAX)
      * 2. HTTP headers (e.g. from REST API / apiFetch)
@@ -321,7 +360,7 @@ class R2G_Media_Handler {
             $max_width = (int) get_option('r2g_max_width', 1920);
         }
 
-        // 5. Engine resolution:
+        // 5. Engine resolution (the legacy 'browser' engine maps to reSmush):
         $engine = '';
         if (!empty($_POST['r2g_engine'])) {
             $engine = sanitize_text_field(wp_unslash($_POST['r2g_engine']));
@@ -330,11 +369,9 @@ class R2G_Media_Handler {
         } elseif (!empty($_COOKIE['r2g_engine'])) {
             $engine = sanitize_text_field(wp_unslash($_COOKIE['r2g_engine']));
         } else {
-            $engine = get_option('r2g_compress_engine', 'server');
+            $engine = get_option('r2g_compress_engine', 'resmush');
         }
-        if (!in_array($engine, array('server', 'resmush', 'browser', 'none'), true)) {
-            $engine = 'server';
-        }
+        $engine = R2G_Optimizer::normalize_engine($engine);
 
         // If raw lossless engine selected, disable lossy transforms
         if ($engine === 'none') {
@@ -358,17 +395,13 @@ class R2G_Media_Handler {
             $storage_mode = 'both';
         }
 
-        // Client pre-compressed flag from browser canvas
-        $client_compressed = !empty($_POST['r2g_client_compressed']) || !empty($_SERVER['HTTP_X_R2G_CLIENT_COMPRESSED']);
-
         return array(
-            'format'            => $format,
-            'quality'           => $quality,
-            'compress'          => (bool)$compress,
-            'max_width'         => $max_width,
-            'storage_mode'      => $storage_mode,
-            'engine'            => $engine,
-            'client_compressed' => $client_compressed,
+            'format'       => $format,
+            'quality'      => $quality,
+            'compress'     => (bool)$compress,
+            'max_width'    => $max_width,
+            'storage_mode' => $storage_mode,
+            'engine'       => $engine,
         );
     }
 
@@ -418,14 +451,14 @@ class R2G_Media_Handler {
         }
 
         $opts = self::get_effective_upload_options();
+        $orig_size = (int) filesize($file_path);
 
         $opt_res = R2G_Optimizer::optimize_local_file($file_path, array(
-            'format'            => $opts['format'],
-            'quality'           => $opts['quality'],
-            'max_width'         => $opts['max_width'],
-            'compress'          => $opts['compress'],
-            'engine'            => $opts['engine'],
-            'client_compressed' => $opts['client_compressed'],
+            'format'    => $opts['format'],
+            'quality'   => $opts['quality'],
+            'max_width' => $opts['max_width'],
+            'compress'  => $opts['compress'],
+            'engine'    => $opts['engine'],
         ));
 
         // A WebP policy is strict for new uploads: never report success while
@@ -437,12 +470,13 @@ class R2G_Media_Handler {
             return $upload;
         }
 
-        if ($opt_res['success'] && !empty($opt_res['file_path'])) {
+        if (!empty($opt_res['success']) && !empty($opt_res['file_path'])) {
             $new_file = $opt_res['file_path'];
             $upload['file'] = $new_file;
 
             self::$processed_files[$new_file]  = $opts;
             self::$processed_files[$file_path] = $opts;
+            self::$opt_info[$new_file] = self::build_opt_info($opt_res, $opts, $orig_size, $new_file);
 
             if (!empty($opt_res['mime'])) {
                 $upload['type'] = $opt_res['mime'];
@@ -495,24 +529,35 @@ class R2G_Media_Handler {
 
         if (!$already_processed) {
             // Sideloaded or direct upload that bypassed on_handle_upload
+            $orig_size = (int) filesize($file_path);
             $opt_res = R2G_Optimizer::optimize_local_file($file_path, array(
-                'format'            => $opts['format'],
-                'quality'           => $opts['quality'],
-                'max_width'         => $opts['max_width'],
-                'compress'          => $opts['compress'],
-                'engine'            => $opts['engine'],
-                'client_compressed' => $opts['client_compressed'],
+                'format'    => $opts['format'],
+                'quality'   => $opts['quality'],
+                'max_width' => $opts['max_width'],
+                'compress'  => $opts['compress'],
+                'engine'    => $opts['engine'],
             ));
 
-            if ($opt_res['success'] && !empty($opt_res['file_path']) && $opt_res['file_path'] !== $file_path) {
-                update_attached_file($attachment_id, $opt_res['file_path']);
-                $file_path = $opt_res['file_path'];
-                $metadata['file'] = _wp_relative_upload_path($file_path);
-                $target_mime = !empty($opt_res['mime']) ? $opt_res['mime'] : 'image/' . ($opts['format'] === 'jpg' ? 'jpeg' : $opts['format']);
-                wp_update_post(array(
-                    'ID'             => $attachment_id,
-                    'post_mime_type' => $target_mime,
-                ));
+            if (!empty($opt_res['success']) && !empty($opt_res['file_path'])) {
+                if ($opt_res['file_path'] !== $file_path) {
+                    update_attached_file($attachment_id, $opt_res['file_path']);
+                    $file_path = $opt_res['file_path'];
+                    $metadata['file'] = _wp_relative_upload_path($file_path);
+                    $target_mime = !empty($opt_res['mime']) ? $opt_res['mime'] : 'image/' . ($opts['format'] === 'jpg' ? 'jpeg' : $opts['format']);
+                    wp_update_post(array(
+                        'ID'             => $attachment_id,
+                        'post_mime_type' => $target_mime,
+                    ));
+                }
+                self::$opt_info[$file_path] = self::build_opt_info($opt_res, $opts, $orig_size, $file_path);
+            }
+        }
+
+        // Persist what the engine really did, so a silent fallback is visible in the Media Library
+        if (isset(self::$opt_info[$file_path])) {
+            update_post_meta($attachment_id, '_r2g_opt_info', self::$opt_info[$file_path]);
+            if ((self::$opt_info[$file_path]['engine_used'] ?? '') !== 'none') {
+                update_post_meta($attachment_id, '_r2g_optimized', 1);
             }
         }
 

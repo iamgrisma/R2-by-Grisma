@@ -117,19 +117,19 @@ class R2G_Admin {
             'ajax_url' => admin_url('admin-ajax.php'),
         ));
 
-        // Enqueue Upload-Time Interceptor (depends only on jQuery to load universally across all admin screens)
+        // Upload-time options script. It never touches the upload transport unless the optional "Ask before upload" popup is enabled.
         wp_enqueue_script(
-            'r2g-browser-compress-js',
-            R2G_URL . 'assets/js/browser-compress.js',
+            'r2g-upload-interceptor-js',
+            R2G_URL . 'assets/js/upload-interceptor.js',
             array('jquery'),
             R2G_VERSION,
             true
         );
 
-        wp_localize_script('r2g-browser-compress-js', 'r2g_compress_config', array(
-            'engine'       => get_option('r2g_compress_engine', 'server'),
+        wp_localize_script('r2g-upload-interceptor-js', 'r2g_compress_config', array(
+            'engine'       => R2G_Optimizer::get_default_engine(),
             'storageMode'  => get_option('r2g_storage_mode', 'both'),
-            'interceptor'  => (int) get_option('r2g_interceptor_enabled', 1),
+            'interceptor'  => (int) get_option('r2g_interceptor_enabled', 0),
             'format'       => get_option('r2g_compress_format', 'webp'),
             'compress'     => (int) get_option('r2g_compress_enabled', 1),
             'quality'      => (int) get_option('r2g_compress_quality', 82),
@@ -196,10 +196,7 @@ class R2G_Admin {
                 $storage_mode = 'both';
             }
             update_option('r2g_storage_mode', $storage_mode);
-            $engine = sanitize_key(wp_unslash($_POST['r2g_compress_engine'] ?? 'server'));
-            if (!in_array($engine, array('server', 'resmush', 'browser', 'none'), true)) {
-                $engine = 'server';
-            }
+            $engine = R2G_Optimizer::normalize_engine(sanitize_key(wp_unslash($_POST['r2g_compress_engine'] ?? 'resmush')));
             update_option('r2g_compress_engine', $engine);
 
             // Compression, Format & Policies
@@ -305,7 +302,7 @@ class R2G_Admin {
         $format = sanitize_text_field($_POST['format'] ?? 'webp');
         $quality = (int) ($_POST['quality'] ?? 82);
         $max_width = (int) ($_POST['max_width'] ?? 1920);
-        $engine = sanitize_text_field($_POST['engine'] ?? 'server');
+        $engine = R2G_Optimizer::normalize_engine(sanitize_text_field($_POST['engine'] ?? ''));
 
         $tmp_file = $_FILES['image']['tmp_name'];
         $orig_name = sanitize_file_name($_FILES['image']['name'] ?? 'image.jpg');
@@ -326,13 +323,17 @@ class R2G_Admin {
             wp_send_json_error(array('message' => esc_html__('Could not initialize temporary file for preview.', 'r2-by-grisma')));
         }
 
+        // The preview can include a slow reSmush.it call; never let PHP's own limit cut it short.
+        if (function_exists('set_time_limit')) {
+            @set_time_limit(180);
+        }
+
         $opt_res = R2G_Optimizer::optimize_local_file($temp_path, array(
-            'format'            => $format,
-            'quality'           => $quality,
-            'max_width'         => $max_width,
-            'engine'            => $engine,
-            'compress'          => 1,
-            'client_compressed' => 0,
+            'format'    => $format,
+            'quality'   => $quality,
+            'max_width' => $max_width,
+            'engine'    => $engine,
+            'compress'  => 1,
         ));
 
         $final_path = ($opt_res['success'] && !empty($opt_res['file_path'])) ? $opt_res['file_path'] : $temp_path;
@@ -354,12 +355,15 @@ class R2G_Admin {
             @unlink($final_path);
         }
 
-        $resmush_info = $opt_res['resmush_result'] ?? null;
-        $engine_status = 'success';
-        $engine_message = '';
-        if ($engine === 'resmush' && is_array($resmush_info)) {
-            $engine_status  = $resmush_info['status'] ?? 'unknown';
-            $engine_message = $resmush_info['message'] ?? '';
+        $engine_used = $opt_res['engine_used'] ?? $engine;
+        $engine_note = $opt_res['engine_note'] ?? '';
+        if (empty($opt_res['success']) && !empty($opt_res['message'])) {
+            $engine_note = $opt_res['message'];
+        }
+        // success = the requested engine did the work; fallback = reSmush was requested but GD finished the job
+        $engine_status = ($engine === 'resmush' && $engine_used !== 'resmush') ? 'fallback' : 'success';
+        if (empty($opt_res['success'])) {
+            $engine_status = 'error';
         }
 
         wp_send_json_success(array(
@@ -370,8 +374,9 @@ class R2G_Admin {
             'mime'           => $mime,
             'format'         => $format,
             'engine'         => $engine,
+            'engine_used'    => $engine_used,
             'engine_status'  => $engine_status,
-            'engine_message' => $engine_message,
+            'engine_message' => $engine_note,
         ));
     }
 
@@ -683,21 +688,18 @@ class R2G_Admin {
                                 <th><label for="r2g_compress_engine"><?php esc_html_e('Optimization & Compression Engine', 'r2-by-grisma'); ?></label></th>
                                 <td>
                                     <select name="r2g_compress_engine" id="r2g_compress_engine" class="r2g-input" style="max-width:400px; font-weight:600;">
-                                        <option value="server" <?php selected($engine, 'server'); ?>>
-                                             <?php esc_html_e('Server: PHP GD / Imagick (Recommended — Native, Instant)', 'r2-by-grisma'); ?>
-                                        </option>
                                         <option value="resmush" <?php selected($engine, 'resmush'); ?>>
-                                            <?php esc_html_e('reSmush.it Free API (Auto-fallback to GD/Imagick for >5MB)', 'r2-by-grisma'); ?>
+                                            <?php esc_html_e('reSmush.it Free API (Recommended — Offloads CPU, Auto GD Fallback)', 'r2-by-grisma'); ?>
                                         </option>
-                                        <option value="browser" <?php selected($engine, 'browser'); ?>>
-                                            <?php esc_html_e('Browser Edge (Client-side HTML5 Canvas — 0 Server CPU)', 'r2-by-grisma'); ?>
+                                        <option value="server" <?php selected($engine, 'server'); ?>>
+                                            <?php esc_html_e('Server: PHP GD / Imagick (Native Local Processing)', 'r2-by-grisma'); ?>
                                         </option>
                                         <option value="none" <?php selected($engine, 'none'); ?>>
                                             <?php esc_html_e('Raw Offload (No Compression / Lossless)', 'r2-by-grisma'); ?>
                                         </option>
                                     </select>
                                     <p class="description">
-                                        <?php esc_html_e('Regardless of engine, uploads follow the same streamlined flow. If an image exceeds reSmush.it 5MB limit or the API is offline, it automatically falls back to server GD/Imagick.', 'r2-by-grisma'); ?>
+                                        <?php esc_html_e('reSmush.it optimizes images via its free cloud web service (https://resmush.it/api/) saving host CPU. If an image exceeds 5MB or the API is unreachable, it automatically and seamlessly falls back to Server GD/Imagick.', 'r2-by-grisma'); ?>
                                     </p>
                                 </td>
                             </tr>
@@ -844,8 +846,8 @@ class R2G_Admin {
                             <div>
                                 <label style="display:block; font-size:12px; font-weight:600; color:#475569; margin-bottom:4px;"><?php esc_html_e('Processing Engine:', 'r2-by-grisma'); ?></label>
                                 <select id="r2g-sync-engine" class="r2g-input" style="height:32px; font-size:12px; font-weight:600;">
+                                    <option value="resmush" <?php selected($engine, 'resmush'); ?>><?php esc_html_e('reSmush.it Free API (Auto GD/Imagick fallback)', 'r2-by-grisma'); ?></option>
                                     <option value="server" <?php selected($engine, 'server'); ?>><?php esc_html_e('Server: PHP GD / Imagick (Native Background)', 'r2-by-grisma'); ?></option>
-                                    <option value="resmush" <?php selected($engine, 'resmush'); ?>><?php esc_html_e('reSmush.it Free API (Fallback to WordPress image editor)', 'r2-by-grisma'); ?></option>
                                     <option value="none" <?php selected($engine, 'none'); ?>><?php esc_html_e('Raw Offload (Lossless)', 'r2-by-grisma'); ?></option>
                                 </select>
                             </div>

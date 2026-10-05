@@ -4,11 +4,11 @@ Tags: r2, cloudflare, cloudflare r2, image optimization, webp, s3, offload media
 Requires at least: 5.8
 Tested up to: 6.7
 Requires PHP: 7.4
-Stable tag: 1.0.21
+Stable tag: 1.0.22
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
-Enterprise Cloudflare R2 sync with upload-time format & compression controls, server-side WebP conversion, custom CDN delivery, and zero vendor bloat.
+Enterprise Cloudflare R2 sync with reSmush.it cloud API & Server GD/Imagick optimization, on-site WebP conversion, custom CDN delivery, and zero vendor bloat.
 
 == Description ==
 
@@ -16,16 +16,13 @@ Enterprise Cloudflare R2 sync with upload-time format & compression controls, se
 
 ### Key Highlights
 * **Zero Vendor SDK Bloat:** Pure PHP AWS SigV4 implementation (<100KB footprint instead of 50MB AWS SDKs).
-* **Browser Upload Interceptor:** Halts uploads before server bandwidth is consumed; inspect preview, format, and dimensions with 1-click confirmation or override.
-* **In-Browser Compress Preview:** Live "Preview Compression" button produces instant Canvas WebP/JPG blobs in memory, displaying live image clarity, exact byte reduction, and savings percentage badge.
-* **Client-Side Canvas Compression:** Compresses and converts images to WebP/JPG right in the browser, eliminating 100% server CPU and hosting load.
+* **reSmush.it Cloud Optimization (Primary):** Zero-CPU cloud compression via reSmush.it official API (with automatic, seamless fallback to Server GD/Imagick).
+* **Native Upload Stability:** 100% native upload flow by default. Eliminates browser canvas freezes and Plupload/Gutenberg queue hangs (0%/3% stuck).
+* **Server-Side WebP Conversion:** Converts raster images (JPG, PNG) to lightweight modern WebP format on the server.
 * **Upload-Time Control:** Preset defaults in Settings with full freedom to override format (WebP, JPEG, PNG, Original) and destination (Dual, Cloud Only, Local Only) per upload.
-* **Multi-File Batch Wildcard (*):** Batch carousel with wildcard apply-to-all options and thumbnail switcher.
-* **Universal Drag-and-Drop & Multi-Form Support:** Intercepts drag-and-drop across Gutenberg, Media Library, and native browser file uploader (`media-new.php?browser-uploader`).
-* **Streamlined Multi-Engine Support:** Choose between Browser Edge Canvas, Server PHP GD/Imagick, reSmush.it Free API (with automatic fallback), or Raw Offload in the exact same flow.
 * **Safe Bulk Sync & Verified Cleanup:** Bulk Sync NEVER auto-deletes local files. Reclaim server disk space on demand via safe verified cleanup.
 * **Universal Custom CDN Routing:** Rewrites URLs and responsive `srcset` for both Headless REST API (Astro, Next.js) and standard WordPress monolithic themes.
-* **Minimalist UI:** Clean modern status badges (Cloud, Synced, Local, Missing) with responsive controls.
+* **Minimalist UI:** Clean modern status badges (Cloud, Synced, Local, Missing) with responsive controls and detailed optimization notes.
 * **Encrypted Credentials:** AES-256-CBC encryption for secret keys.
 
 == Installation ==
@@ -35,6 +32,14 @@ Enterprise Cloudflare R2 sync with upload-time format & compression controls, se
 4. Click **Test Connection & Verify CDN** to confirm connection.
 
 == Changelog ==
+
+= 1.0.22 =
+* Elimination of Browser Canvas Engine: Completely removed client-side canvas manipulation, blob alteration, and DataTransfer file swapping that caused Plupload multi-file upload, Gutenberg block drag-and-drop, and Media Library uploads to hang at 0% or 3%.
+* reSmush.it as Ultimate Cloud Engine: Fixed reSmush.it API endpoint to use official direct-upload endpoint (`https://api.resmush.it/?qlty=...`), generous 60s timeout, HTTP fallback download handling, and pre-resize/EXIF orientation handling for images exceeding 5MB.
+* Seamless Server GD/Imagick Fallback: When reSmush.it is unreachable or image is unsupported/optimal, processing automatically and transparently falls back to Server GD/Imagick.
+* Transparent Optimization Audit: Stored `_r2g_opt_info` on every attachment recording exact engine used, notes, and bytes saved.
+* Safe Native Upload Default: Made Visual Interceptor modal optional (disabled by default) so standard WordPress uploads run with 100% native stability and zero interference.
+* Optimized Bulk Sync: Safe batching for reSmush.it with automatic time limit extension to prevent server timeouts.
 
 = 1.0.21 =
 * Fixed a Plupload start race: hold image uploads before WordPress starts the request, show the interceptor first, and release the queue only after confirmation.

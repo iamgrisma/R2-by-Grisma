@@ -107,27 +107,36 @@ class R2G_Media_Library {
         $ext = strtolower(pathinfo($file_path ?: '', PATHINFO_EXTENSION));
         $is_webp_or_avif = in_array($ext, array('webp', 'avif'), true) || in_array($mime, array('image/webp', 'image/avif'), true);
         $is_optimized = (bool) get_post_meta($post_id, '_r2g_optimized', true);
+        $opt_info = get_post_meta($post_id, '_r2g_opt_info', true);
+
+        $engine_buttons = '<button type="button" class="button button-small r2g-btn-recompress" data-id="' . esc_attr($post_id) . '" data-engine="resmush" title="' . esc_attr__('Compress via reSmush.it (falls back to Server GD)', 'r2-by-grisma') . '">' . esc_html__('reSmush', 'r2-by-grisma') . '</button>'
+            . '<button type="button" class="button button-small r2g-btn-recompress" data-id="' . esc_attr($post_id) . '" data-engine="server" title="' . esc_attr__('Compress using Server PHP GD / Imagick only', 'r2-by-grisma') . '">' . esc_html__('Server GD', 'r2-by-grisma') . '</button>';
 
         echo '<div class="r2g-compress-cell" id="r2g-compress-cell-' . esc_attr($post_id) . '">';
 
         if ($is_webp_or_avif || $is_optimized) {
             $format_label = strtoupper($ext ?: 'WebP');
             echo '<span class="r2g-badge r2g-badge-both" style="margin-bottom:4px;" title="' . esc_attr__('Optimized format with lightweight footprint', 'r2-by-grisma') . '">✓ Optimal (' . esc_html($format_label) . ')</span>';
+
+            if (is_array($opt_info) && !empty($opt_info['engine_used'])) {
+                $orig = (int) ($opt_info['orig_bytes'] ?? 0);
+                $final = (int) ($opt_info['final_bytes'] ?? 0);
+                $saved_txt = ($orig > 0 && $final > 0 && $final < $orig) ? ' −' . round((($orig - $final) / $orig) * 100) . '%' : '';
+                $engine_label = $opt_info['engine_used'] === 'resmush' ? 'reSmush.it' : 'Server GD';
+                $is_fallback = (($opt_info['engine_requested'] ?? '') === 'resmush' && $opt_info['engine_used'] !== 'resmush');
+                $line_color = $is_fallback ? '#b45309' : '#059669';
+                echo '<div style="font-size:11px; color:' . esc_attr($line_color) . '; font-weight:600;" title="' . esc_attr($opt_info['note'] ?? '') . '">'
+                    . esc_html($engine_label . $saved_txt . ($is_fallback ? ' (fallback)' : ''))
+                    . '</div>';
+            }
+
             echo '<div style="margin-top:4px;">
                     <a href="#" class="r2g-link-toggle-recompress" data-id="' . esc_attr($post_id) . '" style="font-size:11px; color:#64748b; text-decoration:none;">' . esc_html__('Re-compress ↻', 'r2-by-grisma') . '</a>
-                    <div class="r2g-recompress-opts" style="display:none; margin-top:4px; gap:4px; flex-wrap:wrap;">
-                      <button type="button" class="button button-small r2g-btn-recompress" data-id="' . esc_attr($post_id) . '" data-engine="server" title="Compress using Server PHP GD">' . esc_html__('Server GD', 'r2-by-grisma') . '</button>
-                      <button type="button" class="button button-small r2g-btn-recompress" data-id="' . esc_attr($post_id) . '" data-engine="resmush" title="Compress using reSmush.it">' . esc_html__('reSmush', 'r2-by-grisma') . '</button>
-                      <button type="button" class="button button-small r2g-btn-recompress" data-id="' . esc_attr($post_id) . '" data-engine="browser" title="Compress locally in browser">' . esc_html__('Edge', 'r2-by-grisma') . '</button>
-                    </div>
+                    <div class="r2g-recompress-opts" style="display:none; margin-top:4px; gap:4px; flex-wrap:wrap;">' . $engine_buttons . '</div>
                   </div>';
         } else {
-            echo '<span style="font-size:11px; font-weight:600; color:#b45309; display:block; margin-bottom:4px;">' . esc_html__('Uncompressed (' . strtoupper($ext) . ')', 'r2-by-grisma') . '</span>';
-            echo '<div class="r2g-recompress-opts" style="display:flex; gap:4px; flex-wrap:wrap;">
-                    <button type="button" class="button button-small r2g-btn-recompress" data-id="' . esc_attr($post_id) . '" data-engine="server" title="Compress to WebP via Server GD">' . esc_html__('Server GD', 'r2-by-grisma') . '</button>
-                    <button type="button" class="button button-small r2g-btn-recompress" data-id="' . esc_attr($post_id) . '" data-engine="resmush" title="Compress via reSmush.it">' . esc_html__('reSmush', 'r2-by-grisma') . '</button>
-                    <button type="button" class="button button-small r2g-btn-recompress" data-id="' . esc_attr($post_id) . '" data-engine="browser" title="Compress in Browser">' . esc_html__('Edge', 'r2-by-grisma') . '</button>
-                  </div>';
+            echo '<span style="font-size:11px; font-weight:600; color:#b45309; display:block; margin-bottom:4px;">' . esc_html(sprintf(__('Uncompressed (%s)', 'r2-by-grisma'), strtoupper($ext))) . '</span>';
+            echo '<div class="r2g-recompress-opts" style="display:flex; gap:4px; flex-wrap:wrap;">' . $engine_buttons . '</div>';
         }
 
         echo '</div>';
@@ -574,14 +583,17 @@ class R2G_Media_Library {
         $quality = (int) get_option('r2g_compress_quality', 82);
         $max_width = (int) get_option('r2g_max_width', 1920);
 
-        $opt_res = R2G_Optimizer::optimize_local_file($file_path, array(
+        $orig_size = (int) filesize($file_path);
+        $opts = array(
             'format'    => 'webp',
             'quality'   => $quality,
             'max_width' => $max_width,
             'compress'  => true,
-        ));
+            'engine'    => R2G_Optimizer::get_default_engine(),
+        );
+        $opt_res = R2G_Optimizer::optimize_local_file($file_path, $opts);
 
-        if ($opt_res['success'] && !empty($opt_res['file_path'])) {
+        if (!empty($opt_res['success']) && !empty($opt_res['file_path'])) {
             $new_file = $opt_res['file_path'];
             update_attached_file($id, $new_file);
             wp_update_post(array(
@@ -589,9 +601,13 @@ class R2G_Media_Library {
                 'post_mime_type' => !empty($opt_res['mime']) ? $opt_res['mime'] : 'image/webp',
             ));
 
+            // The file is already optimized: keep on_generate_metadata from running the engine again.
+            R2G_Media_Handler::mark_processed($new_file);
             require_once ABSPATH . 'wp-admin/includes/image.php';
             $metadata = wp_generate_attachment_metadata($id, $new_file);
             wp_update_attachment_metadata($id, $metadata);
+            update_post_meta($id, '_r2g_optimized', 1);
+            update_post_meta($id, '_r2g_opt_info', R2G_Media_Handler::build_opt_info($opt_res, $opts, $orig_size, $new_file));
 
             R2G_Media_Handler::sync_attachment_to_r2($id, true, $metadata);
 
@@ -622,40 +638,10 @@ class R2G_Media_Library {
             wp_send_json_error(array('message' => 'Invalid attachment ID'));
         }
 
-        $engine = sanitize_text_field($_POST['engine'] ?? 'server');
+        $engine = R2G_Optimizer::normalize_engine(sanitize_text_field($_POST['engine'] ?? ''));
         $format = sanitize_text_field($_POST['format'] ?? 'webp');
         $quality = (int) ($_POST['quality'] ?? get_option('r2g_compress_quality', 82));
         $max_width = (int) get_option('r2g_max_width', 1920);
-
-        // Check if browser uploaded pre-compressed blob:
-        if ($engine === 'browser' && !empty($_FILES['image']) && !empty($_FILES['image']['tmp_name'])) {
-            $tmp = $_FILES['image']['tmp_name'];
-            $file_path = get_attached_file($id);
-            if (!$file_path) {
-                $uploads = wp_upload_dir();
-                $file_path = $uploads['path'] . '/' . sanitize_file_name($_FILES['image']['name'] ?? 'image.webp');
-            }
-            $target_webp = preg_replace('/\.[^.]+$/', '.webp', $file_path);
-            @copy($tmp, $target_webp);
-            update_attached_file($id, $target_webp);
-            wp_update_post(array('ID' => $id, 'post_mime_type' => 'image/webp'));
-
-            require_once ABSPATH . 'wp-admin/includes/image.php';
-            $metadata = wp_generate_attachment_metadata($id, $target_webp);
-            wp_update_attachment_metadata($id, $metadata);
-            update_post_meta($id, '_r2g_optimized', 1);
-
-            R2G_Media_Handler::sync_attachment_to_r2($id, true, $metadata);
-
-            $rewriter = class_exists('R2G_URL_Rewriter') ? R2G_URL_Rewriter::instance() : null;
-            $new_url = $rewriter ? $rewriter->rewrite_url(wp_get_attachment_url($id)) : wp_get_attachment_url($id);
-
-            wp_send_json_success(array(
-                'message' => esc_html__('Compressed in Browser Edge and updated on Cloudflare R2!', 'r2-by-grisma'),
-                'url'     => $new_url,
-                'format'  => 'WEBP',
-            ));
-        }
 
         $file_path = get_attached_file($id);
         if (!$file_path || !file_exists($file_path)) {
@@ -667,15 +653,17 @@ class R2G_Media_Library {
             wp_send_json_error(array('message' => 'File not found on server or R2.'));
         }
 
-        $opt_res = R2G_Optimizer::optimize_local_file($file_path, array(
+        $orig_size = (int) filesize($file_path);
+        $opts = array(
             'format'    => $format,
             'quality'   => $quality,
             'max_width' => $max_width,
             'compress'  => true,
             'engine'    => $engine,
-        ));
+        );
+        $opt_res = R2G_Optimizer::optimize_local_file($file_path, $opts);
 
-        if ($opt_res['success'] && !empty($opt_res['file_path'])) {
+        if (!empty($opt_res['success']) && !empty($opt_res['file_path'])) {
             $new_file = $opt_res['file_path'];
             update_attached_file($id, $new_file);
             $mime = !empty($opt_res['mime']) ? $opt_res['mime'] : 'image/' . ($format === 'jpg' ? 'jpeg' : $format);
@@ -684,10 +672,13 @@ class R2G_Media_Library {
                 'post_mime_type' => $mime,
             ));
 
+            // The file is already optimized: keep on_generate_metadata from running the engine again.
+            R2G_Media_Handler::mark_processed($new_file);
             require_once ABSPATH . 'wp-admin/includes/image.php';
             $metadata = wp_generate_attachment_metadata($id, $new_file);
             wp_update_attachment_metadata($id, $metadata);
             update_post_meta($id, '_r2g_optimized', 1);
+            update_post_meta($id, '_r2g_opt_info', R2G_Media_Handler::build_opt_info($opt_res, $opts, $orig_size, $new_file));
 
             // Re-upload to R2 (overriding existing R2 copy)
             R2G_Media_Handler::sync_attachment_to_r2($id, true, $metadata);
@@ -695,18 +686,19 @@ class R2G_Media_Library {
             $rewriter = class_exists('R2G_URL_Rewriter') ? R2G_URL_Rewriter::instance() : null;
             $new_url = $rewriter ? $rewriter->rewrite_url(wp_get_attachment_url($id)) : wp_get_attachment_url($id);
 
-            $msg = ($engine === 'resmush' && !empty($opt_res['resmush_result']['message']))
-                ? $opt_res['resmush_result']['message']
+            $msg = !empty($opt_res['engine_note'])
+                ? $opt_res['engine_note']
                 : sprintf(esc_html__('Successfully compressed (%s) and synced to Cloudflare R2!', 'r2-by-grisma'), strtoupper($format));
 
             wp_send_json_success(array(
                 'message'     => $msg,
                 'url'         => $new_url,
                 'format'      => strtoupper($format),
+                'engine_used' => $opt_res['engine_used'] ?? '',
                 'bytes_saved' => $opt_res['bytes_saved'] ?? 0,
             ));
         }
 
-        wp_send_json_error(array('message' => 'Optimization failed.'));
+        wp_send_json_error(array('message' => !empty($opt_res['message']) ? $opt_res['message'] : 'Optimization failed.'));
     }
 }

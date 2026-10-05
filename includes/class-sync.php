@@ -58,9 +58,14 @@ class R2G_Sync {
         $format  = sanitize_text_field($_POST['format'] ?? '');
         $preset  = sanitize_text_field($_POST['preset'] ?? '');
         $quality = isset($_POST['quality']) ? (int)$_POST['quality'] : 0;
-        $engine  = sanitize_key($_POST['engine'] ?? 'server');
-        if (!in_array($engine, array('server', 'resmush', 'none'), true)) {
-            $engine = 'server';
+        $engine  = R2G_Optimizer::normalize_engine(sanitize_key($_POST['engine'] ?? ''));
+
+        // reSmush.it can take ~20s for a large PNG: keep batches tiny so one AJAX request never times out.
+        if ($engine === 'resmush') {
+            $batch_size = min($batch_size, 2);
+        }
+        if (function_exists('set_time_limit')) {
+            @set_time_limit(300);
         }
 
         $batch_options = array();
