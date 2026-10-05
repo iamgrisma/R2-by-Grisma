@@ -294,12 +294,26 @@
     let syncCancelled = false;
 
     // Live batch option changes for Bulk Sync
-    $('#r2g-sync-format').on('change', function() {
-      const f = $(this).val();
-      if (f === 'keep' || f === 'none') {
+    const syncPresetQuality = {
+      webp_balanced: 82,
+      webp_high: 90,
+      jpeg_balanced: 82,
+      jpeg_high: 90,
+      original_compressed: 82,
+      raw_lossless: 100,
+    };
+
+    $('#r2g-sync-preset').on('change', function() {
+      const preset = $(this).val();
+      if (preset === 'keep_current' || preset === 'raw_lossless') {
         $('#r2g-sync-quality-wrap').hide();
       } else {
         $('#r2g-sync-quality-wrap').show();
+      }
+      const presetQuality = syncPresetQuality[preset];
+      if (presetQuality) {
+        $('#r2g-sync-quality-slider').val(presetQuality);
+        $('#r2g-sync-quality-val').text(presetQuality + '%');
       }
     });
 
@@ -310,9 +324,7 @@
     $('#r2g-sync-engine').on('change', function() {
       const eng = $(this).val();
       const $notice = $('#r2g-sync-notice-text');
-      if (eng === 'browser') {
-        $notice.html('<strong style="color:#0284c7;">Browser Engine Active:</strong> Converts and compresses media in this browser tab using HTML5 Canvas. Zero server CPU/cost! <em>Please keep this tab open until sync finishes.</em>');
-      } else if (eng === 'resmush') {
+      if (eng === 'resmush') {
         $notice.text('reSmush.it Engine: Compresses via free reSmush API (auto-fallback to PHP GD/Imagick if >5MB or offline).');
       } else if (eng === 'none') {
         $notice.text('Lossless Engine: Pushes binary files directly to R2 without alteration.');
@@ -337,7 +349,7 @@
       const $progText = $('#r2g-sync-status-text');
       const $progPct = $('#r2g-sync-percentage');
 
-      const syncFormat = $('#r2g-sync-format').val() || 'keep';
+      const syncPreset = $('#r2g-sync-preset').val() || 'keep_current';
       const syncQuality = parseInt($('#r2g-sync-quality-slider').val(), 10) || 82;
       const syncEngine = $('#r2g-sync-engine').val() || 'server';
 
@@ -358,7 +370,8 @@
           data: {
             action: 'r2g_bulk_sync_batch',
             batch_size: 5,
-            format: syncFormat,
+            format: 'keep',
+            preset: syncPreset,
             quality: syncQuality,
             engine: syncEngine,
             nonce: nonce,
@@ -389,6 +402,14 @@
             $progFill.css('width', pct + '%');
             $progPct.text(pct + '% (' + synced + '/' + total + ')');
             $progText.text('Synced ' + synced + ' / ' + total + ' media items (' + remaining + ' remaining)...');
+
+            if ((res.data.failed_count || 0) > 0 && (res.data.synced_count || 0) === 0 && remaining > 0) {
+              $progText.text('Stopped: ' + res.data.failed_count + ' media items failed. Check the R2 connection, permissions, and local files, then retry. The sync will not loop on the same failed files.');
+              $pauseBtn.hide();
+              $cancelBtn.hide();
+              $startBtn.show().text('Retry Bulk Sync');
+              return;
+            }
 
             if (res.data.done || !res.data.remaining) {
               $progFill.css('width', '100%');
@@ -436,7 +457,7 @@
     $('#r2g-btn-clean-verified').on('click', function(e) {
       e.preventDefault();
       if ($(this).is(':disabled')) return;
-      if (!confirm('Are you sure you want to clean local server copies for verified R2 media? Your files remain completely safe and fast on Cloudflare R2.')) {
+      if (!confirm('Delete local media files after checking each object directly on R2? This leaves R2 as the only copy. Do you have an independent backup, or are you prepared to restore these files from R2 if needed? Cancel if you need to make a backup first.')) {
         return;
       }
 
@@ -473,6 +494,7 @@
             }
 
             const cleanedBatch = res.data.cleaned_count || 0;
+            const failedBatch = res.data.failed_count || 0;
             const remaining = res.data.remaining || 0;
             cleanedSoFar += cleanedBatch;
 
@@ -480,6 +502,12 @@
             $fill.css('width', pct + '%');
             $pct.text(pct + '%');
             $text.text('Cleaned ' + cleanedSoFar + ' local files. ' + remaining + ' remaining...');
+
+            if (failedBatch > 0 && cleanedBatch === 0) {
+              $text.text('Stopped: R2 could not verify the remaining local files, or the server could not delete them. No further files were removed. Check the R2 connection, sync status, and permissions.');
+              $btn.prop('disabled', false);
+              return;
+            }
 
             // Update verified count in UI
             $('#r2g-verified-count').text(remaining);

@@ -36,11 +36,24 @@ class R2G_Admin {
         add_action('admin_enqueue_scripts', array($this, 'enqueue_admin_assets'));
         add_action('enqueue_block_editor_assets', array($this, 'on_enqueue_block_editor_assets'));
         add_action('wp_enqueue_media', array($this, 'on_wp_enqueue_media'));
+        add_filter('wp_client_side_media_processing_enabled', array($this, 'filter_core_client_side_media_processing'), 100);
 
         // Ajax Handlers
         add_action('wp_ajax_r2g_test_connection', array($this, 'ajax_test_connection'));
         add_action('wp_ajax_r2g_fetch_buckets', array($this, 'ajax_fetch_buckets'));
         add_action('wp_ajax_r2g_preview_compression', array($this, 'ajax_preview_compression'));
+    }
+
+    /**
+     * Keep Gutenberg uploads on the WordPress mediaUpload path while our
+     * interceptor is enabled. Newer core upload queues bypass mediaUpload
+     * interception and perform their own client-side transcode first.
+     *
+     * @param bool $enabled Whether core client-side processing is enabled.
+     * @return bool
+     */
+    public function filter_core_client_side_media_processing($enabled) {
+        return (int) get_option('r2g_interceptor_enabled', 1) === 1 ? false : $enabled;
     }
 
     /**
@@ -178,8 +191,16 @@ class R2G_Admin {
             update_option('r2g_auto_upload', !empty($_POST['r2g_auto_upload']) ? 1 : 0);
             update_option('r2g_rewrite_urls', !empty($_POST['r2g_rewrite_urls']) ? 1 : 0);
             update_option('r2g_delete_from_r2', !empty($_POST['r2g_delete_from_r2']) ? 1 : 0);
-            update_option('r2g_storage_mode', sanitize_text_field(wp_unslash($_POST['r2g_storage_mode'] ?? 'both')));
-            update_option('r2g_compress_engine', sanitize_text_field(wp_unslash($_POST['r2g_compress_engine'] ?? 'server')));
+            $storage_mode = sanitize_key(wp_unslash($_POST['r2g_storage_mode'] ?? 'both'));
+            if (!in_array($storage_mode, array('both', 'r2_only', 'local_only'), true)) {
+                $storage_mode = 'both';
+            }
+            update_option('r2g_storage_mode', $storage_mode);
+            $engine = sanitize_key(wp_unslash($_POST['r2g_compress_engine'] ?? 'server'));
+            if (!in_array($engine, array('server', 'resmush', 'browser', 'none'), true)) {
+                $engine = 'server';
+            }
+            update_option('r2g_compress_engine', $engine);
 
             // Compression, Format & Policies
             update_option('r2g_compress_enabled', !empty($_POST['r2g_compress_enabled']) ? 1 : 0);
@@ -395,6 +416,18 @@ class R2G_Admin {
         $max_width         = (int) get_option('r2g_max_width', 1920);
         $interceptor_enabled = (int) get_option('r2g_interceptor_enabled', 1);
         $engine            = get_option('r2g_compress_engine', 'server');
+
+        $bulk_default_preset = 'custom';
+        foreach (R2G_Media_Handler::get_presets() as $preset_id => $preset_options) {
+            if ($preset_id !== 'custom'
+                && $preset_options['format'] === $format
+                && (int) $preset_options['quality'] === $quality
+                && (int) $preset_options['max_width'] === $max_width
+                && (int) $preset_options['compress'] === $compress_enabled) {
+                $bulk_default_preset = $preset_id;
+                break;
+            }
+        }
 
         // Stats
         $stats = class_exists('R2G_Database') ? R2G_Database::get_stats() : array();
@@ -629,8 +662,12 @@ class R2G_Admin {
                                             <input type="radio" name="r2g_storage_mode" value="r2_only" <?php checked($storage_mode, 'r2_only'); ?> />
                                             <span><?php esc_html_e('Cloud Only (Delete Local Files to Save Server Disk)', 'r2-by-grisma'); ?></span>
                                         </label>
+                                        <label class="r2g-radio-pill">
+                                            <input type="radio" name="r2g_storage_mode" value="local_only" <?php checked($storage_mode, 'local_only'); ?> />
+                                            <span><?php esc_html_e('WordPress Only (Keep Local; Skip R2 Upload)', 'r2-by-grisma'); ?></span>
+                                        </label>
                                     </div>
-                                    <p class="description"><?php esc_html_e('Cloud Only frees web hosting disk space. You can restore local files at any time via the Media Library.', 'r2-by-grisma'); ?></p>
+                                    <p class="description"><?php esc_html_e('Cloud Only automatically removes each local file after its R2 object is verified. R2 becomes the only copy; keep an independent backup if you need one. If verification fails, the local file stays.', 'r2-by-grisma'); ?></p>
                                 </td>
                             </tr>
                         </table>
@@ -711,7 +748,7 @@ class R2G_Admin {
                             <tr id="r2g-row-max-width">
                                 <th><label for="r2g_max_width"><?php esc_html_e('Max Image Width', 'r2-by-grisma'); ?></label></th>
                                 <td>
-                                    <input type="number" id="r2g_max_width" name="r2g_max_width" value="<?php echo esc_attr($max_width); ?>" min="0" step="100" class="r2g-input" style="max-width:140px;" /> px
+                                    <input type="number" id="r2g_max_width" name="r2g_max_width" value="<?php echo esc_attr($max_width); ?>" min="0" step="1" class="r2g-input" style="max-width:140px;" /> px
                                     <p class="description"><?php esc_html_e('Downsizes oversized camera photos (e.g. 4000px) down to web standards (e.g. 1920px). Set 0 to disable.', 'r2-by-grisma'); ?></p>
                                 </td>
                             </tr>
@@ -786,29 +823,30 @@ class R2G_Admin {
                         <h3 style="margin-top:0; font-size:13px; font-weight:700; color:#0f172a; margin-bottom:10px;"><?php esc_html_e('Batch Conversion & Sync Options', 'r2-by-grisma'); ?></h3>
                         <div style="display:flex; flex-wrap:wrap; gap:16px; align-items:center;">
                             <div>
-                                <label style="display:block; font-size:12px; font-weight:600; color:#475569; margin-bottom:4px;"><?php esc_html_e('Target Format:', 'r2-by-grisma'); ?></label>
-                                <select id="r2g-sync-format" class="r2g-input" style="height:32px; font-size:12px; font-weight:600;">
-                                    <option value="keep"><?php esc_html_e('Keep Existing Format (No Re-conversion)', 'r2-by-grisma'); ?></option>
-                                    <option value="webp" selected><?php esc_html_e('Convert to WebP (Recommended)', 'r2-by-grisma'); ?></option>
-                                    <option value="jpg"><?php esc_html_e('Convert to JPEG / JPG', 'r2-by-grisma'); ?></option>
-                                    <option value="png"><?php esc_html_e('Convert to PNG', 'r2-by-grisma'); ?></option>
-                                    <option value="none"><?php esc_html_e('Raw Offload (Lossless / No Compression)', 'r2-by-grisma'); ?></option>
+                                <label style="display:block; font-size:12px; font-weight:600; color:#475569; margin-bottom:4px;"><?php esc_html_e('Sync Preset:', 'r2-by-grisma'); ?></label>
+                                <select id="r2g-sync-preset" class="r2g-input" style="height:32px; font-size:12px; font-weight:600;">
+                                    <option value="keep_current"><?php esc_html_e('Keep Existing Files', 'r2-by-grisma'); ?></option>
+                                    <option value="custom" <?php selected($bulk_default_preset, 'custom'); ?>><?php esc_html_e('Use Current Upload Defaults', 'r2-by-grisma'); ?></option>
+                                    <option value="webp_balanced" <?php selected($bulk_default_preset, 'webp_balanced'); ?>><?php esc_html_e('WebP Balanced (82%, 1920px)', 'r2-by-grisma'); ?></option>
+                                    <option value="webp_high"><?php esc_html_e('WebP High Quality (90%, 2560px)', 'r2-by-grisma'); ?></option>
+                                    <option value="jpeg_balanced"><?php esc_html_e('JPEG Balanced (82%, 1920px)', 'r2-by-grisma'); ?></option>
+                                    <option value="jpeg_high"><?php esc_html_e('JPEG High Quality (90%, 2560px)', 'r2-by-grisma'); ?></option>
+                                    <option value="raw_lossless"><?php esc_html_e('Raw Offload (No Processing)', 'r2-by-grisma'); ?></option>
                                 </select>
                             </div>
                             <div id="r2g-sync-quality-wrap">
                                 <label style="display:block; font-size:12px; font-weight:600; color:#475569; margin-bottom:4px;"><?php esc_html_e('Quality:', 'r2-by-grisma'); ?></label>
                                 <div style="display:flex; align-items:center; gap:8px;">
-                                    <input type="range" id="r2g-sync-quality-slider" min="50" max="100" value="82" style="width:110px;" />
-                                    <span id="r2g-sync-quality-val" class="r2g-quality-badge">82%</span>
+                                    <input type="range" id="r2g-sync-quality-slider" min="50" max="100" value="<?php echo esc_attr($quality); ?>" style="width:110px;" />
+                                    <span id="r2g-sync-quality-val" class="r2g-quality-badge"><?php echo esc_html($quality); ?>%</span>
                                 </div>
                             </div>
                             <div>
                                 <label style="display:block; font-size:12px; font-weight:600; color:#475569; margin-bottom:4px;"><?php esc_html_e('Processing Engine:', 'r2-by-grisma'); ?></label>
                                 <select id="r2g-sync-engine" class="r2g-input" style="height:32px; font-size:12px; font-weight:600;">
-                                    <option value="server"><?php esc_html_e('Server: PHP GD / Imagick (Native Background)', 'r2-by-grisma'); ?></option>
-                                    <option value="browser"><?php esc_html_e('Browser Processing (Zero Server CPU / Cost)', 'r2-by-grisma'); ?></option>
-                                    <option value="resmush"><?php esc_html_e('reSmush.it Free API (Auto-fallback to GD)', 'r2-by-grisma'); ?></option>
-                                    <option value="none"><?php esc_html_e('Raw Offload (Lossless)', 'r2-by-grisma'); ?></option>
+                                    <option value="server" <?php selected($engine, 'server'); ?>><?php esc_html_e('Server: PHP GD / Imagick (Native Background)', 'r2-by-grisma'); ?></option>
+                                    <option value="resmush" <?php selected($engine, 'resmush'); ?>><?php esc_html_e('reSmush.it Free API (Fallback to WordPress image editor)', 'r2-by-grisma'); ?></option>
+                                    <option value="none" <?php selected($engine, 'none'); ?>><?php esc_html_e('Raw Offload (Lossless)', 'r2-by-grisma'); ?></option>
                                 </select>
                             </div>
                         </div>

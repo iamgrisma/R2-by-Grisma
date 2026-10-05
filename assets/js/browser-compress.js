@@ -1,6 +1,6 @@
 /**
  * R2 by Grisma — Universal Upload Interceptor & In-Browser Image Optimizer
- * Version: 1.0.18
+ * Version: 1.0.20
  *
  * Core Features:
  * 1. ZERO sticky bars in the DOM on page load.
@@ -53,13 +53,25 @@
       return fmt;
     },
 
-    setCookie: function(name, val) {
-      document.cookie = name + '=' + encodeURIComponent(val) + '; path=/; max-age=86400; SameSite=Lax';
+    uploadSettings: function() {
+      return {
+        r2g_format: this.format,
+        r2g_compress: this.engine === 'none' ? 0 : this.compress,
+        r2g_quality: this.quality,
+        r2g_max_width: this.maxWidth,
+        r2g_storage_mode: this.storageMode,
+        r2g_engine: this.engine,
+      };
     },
 
-    getCookie: function(name) {
-      const match = document.cookie.match(new RegExp('(^| )' + name + '=([^;]+)'));
-      return match ? decodeURIComponent(match[2]) : null;
+    uploadHeaderName: function(key) {
+      return 'X-' + key.replace(/^r2g_/, 'R2G-').replace(/_([a-z])/g, function(_, letter) {
+        return '-' + letter.toUpperCase();
+      });
+    },
+
+    setCookie: function(name, val) {
+      document.cookie = name + '=' + encodeURIComponent(val) + '; path=/; max-age=86400; SameSite=Lax';
     },
 
     isImage: function(f) {
@@ -84,7 +96,7 @@
       this.format = this.normalizeFormat(this.config.format || 'webp');
       this.quality = parseInt(this.config.quality, 10) || 82;
       this.compress = (this.config.compress !== undefined) ? parseInt(this.config.compress, 10) : 1;
-      this.maxWidth = parseInt(this.config.maxWidth, 10) || 1920;
+      this.maxWidth = Number.isFinite(parseInt(this.config.maxWidth, 10)) ? parseInt(this.config.maxWidth, 10) : 1920;
       this.engine = this.config.engine || 'server';
       this.storageMode = this.config.storageMode || 'both';
 
@@ -169,12 +181,7 @@
     updateUploaderParams: function() {
       if (this.currentUploader && this.currentUploader.settings) {
         this.currentUploader.settings.multipart_params = this.currentUploader.settings.multipart_params || {};
-        this.currentUploader.settings.multipart_params['r2g_format'] = this.format;
-        this.currentUploader.settings.multipart_params['r2g_compress'] = (this.engine === 'none') ? 0 : this.compress;
-        this.currentUploader.settings.multipart_params['r2g_quality'] = this.quality;
-        this.currentUploader.settings.multipart_params['r2g_max_width'] = this.maxWidth;
-        this.currentUploader.settings.multipart_params['r2g_storage_mode'] = this.storageMode;
-        this.currentUploader.settings.multipart_params['r2g_engine'] = this.engine;
+        Object.assign(this.currentUploader.settings.multipart_params, this.uploadSettings());
       }
     },
 
@@ -186,9 +193,15 @@
 
       if (this.currentFiles) {
         this.currentFiles.forEach(function(f) {
+          const original = f._r2g_original_native || (f.getNative ? f.getNative() : (f.getSource ? f.getSource() : f));
           delete f._r2g_compressed;
           delete f._r2g_compressed_format;
           delete f._r2g_compressed_engine;
+          if (original) {
+            delete original._r2g_compressed;
+            delete original._r2g_compressed_format;
+            delete original._r2g_compressed_engine;
+          }
         });
       }
 
@@ -220,15 +233,25 @@
 
         const nativeFile = file.getNative ? file.getNative() : (file.getSource ? file.getSource() : file);
         if (!nativeFile || !nativeFile.type || nativeFile.type.indexOf('image/') !== 0 || nativeFile.type.indexOf('svg') !== -1 || nativeFile.type.indexOf('gif') !== -1) {
+          if (nativeFile && nativeFile.type && nativeFile.type.indexOf('image/') === 0) {
+            nativeFile._r2g_canvas_processed = true;
+          }
           return resolve(nativeFile);
         }
 
         const img = new Image();
         const objectUrl = URL.createObjectURL(nativeFile);
+        let settled = false;
+        const finish = function(result) {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timeout);
+          URL.revokeObjectURL(objectUrl);
+          resolve(result);
+        };
+        const timeout = setTimeout(function() { finish(nativeFile); }, 30000);
 
         img.onload = function() {
-          URL.revokeObjectURL(objectUrl);
-
           let width = img.naturalWidth || img.width;
           let height = img.naturalHeight || img.height;
 
@@ -265,11 +288,14 @@
 
           if (canvas.toBlob) {
             canvas.toBlob(function(blob) {
-              if (!blob) return resolve(nativeFile);
+              if (!blob) return finish(nativeFile);
 
+              const actualMimeType = blob.type || mimeType;
               let ext = 'webp';
-              if (mimeType === 'image/jpeg') ext = 'jpg';
-              else if (mimeType === 'image/png') ext = 'png';
+              if (actualMimeType === 'image/webp') ext = 'webp';
+              else if (actualMimeType === 'image/jpeg') ext = 'jpg';
+              else if (actualMimeType === 'image/png') ext = 'png';
+              else if (actualMimeType === 'image/avif') ext = 'avif';
               else ext = nativeFile.name ? nativeFile.name.split('.').pop() : 'webp';
 
               const baseName = nativeFile.name ? nativeFile.name.replace(/\.[^/.]+$/, '') : 'image';
@@ -277,70 +303,94 @@
 
               let newFile;
               try {
-                newFile = new File([blob], newName, { type: mimeType, lastModified: Date.now() });
+                newFile = new File([blob], newName, { type: actualMimeType, lastModified: Date.now() });
               } catch (e) {
                 blob.name = newName;
                 blob.lastModifiedDate = new Date();
                 newFile = blob;
               }
+              newFile._r2g_canvas_processed = actualMimeType === mimeType;
 
-              resolve(newFile);
+              finish(newFile);
             }, mimeType, q);
           } else {
-            resolve(nativeFile);
+            finish(nativeFile);
           }
         };
 
         img.onerror = function() {
-          URL.revokeObjectURL(objectUrl);
-          resolve(nativeFile);
+          finish(nativeFile);
         };
 
         img.src = objectUrl;
       });
     },
 
-    /**
-     * Batch compress multiple Plupload file items
-     */
-    compressBatch: function(up, imageFiles) {
+    /** Return the previewed blob when current settings match, otherwise compress once. */
+    getUploadFile: function(file) {
       const self = this;
-      const promises = imageFiles.map(function(f) {
-        if (self.hasCompressedPreview && f._r2g_compressed && f._r2g_compressed_format === self.format && f._r2g_compressed_engine === self.engine) {
-          const blob = f._r2g_compressed;
-          f.getSource = function() { return blob; };
-          f.getNative = function() { return blob; };
-          f.size = blob.size;
-          f.name = blob.name;
-          return Promise.resolve(blob);
+      const nativeFile = file && (file.getNative ? file.getNative() : (file.getSource ? file.getSource() : file));
+      if (!nativeFile || !self.isImage(nativeFile)) return Promise.resolve(nativeFile || file);
+
+      if (nativeFile._r2g_canvas_processed) return Promise.resolve(nativeFile);
+      if (nativeFile._r2g_compressed &&
+          nativeFile._r2g_compressed_format === self.format && nativeFile._r2g_compressed_engine === self.engine) {
+        return Promise.resolve(nativeFile._r2g_compressed);
+      }
+      return self.compressImageCanvas(nativeFile, self.format, self.quality, self.maxWidth).then(function(blob) {
+        if (blob && blob !== nativeFile) {
+          nativeFile._r2g_compressed = blob;
+          nativeFile._r2g_compressed_format = self.format;
+          nativeFile._r2g_compressed_engine = self.engine;
         }
-        return self.compressImageCanvas(f, self.format, self.quality, self.maxWidth).then(function(newBlob) {
-          if (newBlob && newBlob !== f) {
-            f.getSource = function() { return newBlob; };
-            f.getNative = function() { return newBlob; };
-            f.size = newBlob.size;
-            f.name = newBlob.name;
-          }
-        });
+        return blob;
       });
-      return Promise.all(promises);
     },
 
-    /**
-     * Batch compress array of File objects (used by Gutenberg & Browser Form)
-     */
+    needsBrowserCompression: function(file) {
+      const nativeFile = file && (file.getNative ? file.getNative() : (file.getSource ? file.getSource() : file));
+      return !!(nativeFile && this.isImage(nativeFile) && !nativeFile._r2g_canvas_processed &&
+        !(nativeFile._r2g_compressed && nativeFile._r2g_compressed_format === this.format && nativeFile._r2g_compressed_engine === this.engine));
+    },
+
+    /** Compress once and adapt the result for the original WordPress uploader. */
+    compressBatch: function(imageFiles) {
+      const self = this;
+      return Promise.all(imageFiles.map(function(file) {
+        return self.getUploadFile(file).then(function(blob) {
+          if (blob && blob !== file && file && typeof file.getNative === 'function') {
+            file._r2g_original_native = file._r2g_original_native || file.getNative();
+            file.getSource = function() { return blob; };
+            file.getNative = function() { return blob; };
+            file.size = blob.size;
+            file.name = blob.name;
+            file._r2g_client_compressed = !!blob._r2g_canvas_processed;
+          }
+          return blob;
+        });
+      }));
+    },
+
+    /** Return the processed File list expected by Gutenberg's uploadMedia. */
     compressFileList: function(files) {
       const self = this;
-      const promises = files.map(function(f) {
-        if (self.hasCompressedPreview && f._r2g_compressed && f._r2g_compressed_format === self.format && f._r2g_compressed_engine === self.engine) {
-          return Promise.resolve(f._r2g_compressed);
-        }
-        if (self.isImage(f)) {
-          return self.compressImageCanvas(f, self.format, self.quality, self.maxWidth);
-        }
-        return Promise.resolve(f);
-      });
-      return Promise.all(promises);
+      return Promise.all(files.map(function(file) {
+        return self.getUploadFile(file);
+      }));
+    },
+
+    applySettings: function(target) {
+      Object.assign(target, this.uploadSettings());
+      return target;
+    },
+
+    setPreviewBusy: function(isBusy) {
+      this.previewInProgress = isBusy;
+      $('#r2g-btn-preview-compress').prop('disabled', isBusy);
+      $('#r2g-btn-modal-proceed').prop('disabled', isBusy);
+      $('#r2g-btn-modal-close, #r2g-btn-modal-cancel').prop('disabled', isBusy);
+      $('.r2g-format-btn, .r2g-engine-btn, .r2g-storage-btn, .r2g-quality-slider').prop('disabled', isBusy);
+      $('#r2g-batch-thumbs').css('pointer-events', isBusy ? 'none' : '');
     },
 
     /**
@@ -486,14 +536,19 @@
       const $btn = $('#r2g-btn-preview-compress');
       const $label = $btn.find('.r2g-preview-btn-text');
 
-      $btn.prop('disabled', true);
+      self.setPreviewBusy(true);
 
       if (self.engine === 'browser') {
         $label.text('Compressing in browser...');
         self.compressImageCanvas(nativeFile, self.format, self.quality, self.maxWidth).then(function(newBlob) {
-          $btn.prop('disabled', false);
+          self.setPreviewBusy(false);
           if (!newBlob) {
             $label.text('⚡ Preview Compression');
+            return;
+          }
+          if (!newBlob._r2g_canvas_processed) {
+            $label.text('⚡ Preview Compression');
+            $('#r2g-stat-dirty-note').text('Browser could not create the selected format. Choose another engine or format.').css({ color: '#b45309' }).show();
             return;
           }
 
@@ -513,7 +568,7 @@
           self.updateSavingsDisplay(nativeFile.size || 1, newBlob.size || 1);
           self.adaptButtonsAfterPreview();
         }).catch(function() {
-          $btn.prop('disabled', false);
+          self.setPreviewBusy(false);
           $label.text('⚡ Preview Compression');
         });
       } else if (self.engine === 'server' || self.engine === 'resmush') {
@@ -534,6 +589,7 @@
         $.ajax({
           url: ajaxUrl,
           type: 'POST',
+          timeout: 45000,
           data: formData,
           processData: false,
           contentType: false,
@@ -572,11 +628,11 @@
             $label.text('⚡ Preview Compression');
           },
           complete: function() {
-            $btn.prop('disabled', false);
+            self.setPreviewBusy(false);
           }
         });
       } else if (self.engine === 'none') {
-        $btn.prop('disabled', false);
+        self.setPreviewBusy(false);
         self.hasCompressedPreview = true;
         self.previewBlob = null;
         self._previewFormat = self.format;
@@ -642,11 +698,11 @@
       self.format = self.normalizeFormat(self.config.format || 'webp');
       self.quality = parseInt(self.config.quality, 10) || 82;
       self.compress = (self.config.compress !== undefined) ? parseInt(self.config.compress, 10) : 1;
-      self.maxWidth = parseInt(self.config.maxWidth, 10) || 1920;
+      self.maxWidth = Number.isFinite(parseInt(self.config.maxWidth, 10)) ? parseInt(self.config.maxWidth, 10) : 1920;
       self.engine = self.config.engine || 'server';
       self.storageMode = self.config.storageMode || 'both';
 
-      $('#r2g-btn-preview-compress').prop('disabled', false);
+      self.setPreviewBusy(false);
 
       const updateFileDisplay = function(idx) {
         activeIndex = idx;
@@ -784,14 +840,17 @@
       });
 
       const closeModal = function() {
+        if (self.previewInProgress) return false;
         $modal.removeClass('r2g-modal-active');
         $(document).off('keydown.r2gmodal');
+        return true;
       };
 
       // Close handlers: Cancel button & Close X
       $modal.find('#r2g-btn-modal-close, #r2g-btn-modal-cancel').off('click').on('click', function(e) {
         e.preventDefault();
         e.stopPropagation();
+        if (self.previewInProgress) return;
         closeModal();
         if (typeof onCancel === 'function') onCancel();
       });
@@ -799,6 +858,7 @@
       // Close handler: Backdrop click outside the card
       $modal.off('click').on('click', function(e) {
         if ($(e.target).is('#r2g-interceptor-modal')) {
+          if (self.previewInProgress) return;
           e.preventDefault();
           closeModal();
           if (typeof onCancel === 'function') onCancel();
@@ -808,6 +868,7 @@
       // Close handler: Escape key
       $(document).on('keydown.r2gmodal', function(e) {
         if (e.key === 'Escape' || e.keyCode === 27) {
+          if (self.previewInProgress) return;
           closeModal();
           if (typeof onCancel === 'function') onCancel();
         }
@@ -817,15 +878,39 @@
       $modal.find('#r2g-btn-modal-proceed').off('click').on('click', function(e) {
         e.preventDefault();
         e.stopPropagation();
+        if (self.previewInProgress) return;
 
         const $btn = $(this);
         $btn.prop('disabled', true);
         $('#r2g-proceed-label').text('Preparing upload...');
 
-        closeModal();
-        $btn.prop('disabled', false);
+        const startUpload = function() {
+          self.setPreviewBusy(false);
+          closeModal();
+          $btn.prop('disabled', false);
+          if (typeof onProceed === 'function') onProceed();
+        };
 
-        if (typeof onProceed === 'function') onProceed();
+        if (self.engine === 'browser' && files.some(function(file) { return self.needsBrowserCompression(file); })) {
+          self.setPreviewBusy(true);
+          $('#r2g-proceed-label').text('Compressing in browser...');
+          const isPluploadBatch = !!(uploader && files[0] && typeof files[0].getNative === 'function');
+          const processing = isPluploadBatch ? self.compressBatch(files) : self.compressFileList(files);
+          processing.then(function(processedFiles) {
+            if (processedFiles.some(function(file) { return self.isImage(file) && !file._r2g_canvas_processed; })) {
+              throw new Error('One or more images could not be processed in the browser.');
+            }
+            startUpload();
+          }).catch(function(error) {
+            self.setPreviewBusy(false);
+            $('#r2g-proceed-label').text('⚡ Compress & Upload');
+            $('#r2g-stat-dirty-note').text(error.message || 'Browser compression failed. Choose another engine or retry.').css({ color: '#b45309' }).show();
+            $btn.removeClass('r2g-ready-upload');
+          });
+          return;
+        }
+
+        startUpload();
       });
 
       // Show modal
@@ -849,12 +934,7 @@
 
         const applyParams = function(up) {
           up.settings.multipart_params = up.settings.multipart_params || {};
-          up.settings.multipart_params['r2g_format'] = self.format;
-          up.settings.multipart_params['r2g_compress'] = (self.engine === 'none') ? 0 : self.compress;
-          up.settings.multipart_params['r2g_quality'] = self.quality;
-          up.settings.multipart_params['r2g_max_width'] = self.maxWidth;
-          up.settings.multipart_params['r2g_storage_mode'] = self.storageMode;
-          up.settings.multipart_params['r2g_engine'] = self.engine;
+          self.applySettings(up.settings.multipart_params);
           self.syncCookies();
         };
 
@@ -874,7 +954,7 @@
             applyParams(up);
             if (self.engine === 'browser') {
               up.stop();
-              self.compressBatch(up, imageFiles).then(function() {
+              self.compressBatch(imageFiles).then(function() {
                 applyParams(up);
                 up.start();
               });
@@ -910,13 +990,12 @@
                 f.getNative = function() { return self.previewBlob; };
                 f.size = self.previewBlob.size;
                 f.name = self.previewBlob.name;
-                up.settings.multipart_params['r2g_client_compressed'] = 1;
+                f._r2g_client_compressed = !!self.previewBlob._r2g_canvas_processed;
                 applyParams(up);
                 try { up.trigger('QueueChanged'); up.refresh(); } catch (e) {}
                 up.start();
               } else if (self.engine === 'browser') {
-                self.compressBatch(up, imageFiles).then(function() {
-                  up.settings.multipart_params['r2g_client_compressed'] = 1;
+                self.compressBatch(imageFiles).then(function() {
                   applyParams(up);
                   files.forEach(function(f) {
                     f.status = queuedStatus;
@@ -943,6 +1022,11 @@
 
         uploader.bind('BeforeUpload', function(up, file) {
           applyParams(up);
+          if (self.engine === 'browser' && file._r2g_client_compressed) {
+            up.settings.multipart_params['r2g_client_compressed'] = 1;
+          } else {
+            delete up.settings.multipart_params['r2g_client_compressed'];
+          }
         });
       };
 
@@ -979,12 +1063,10 @@
       // Global failsafe for async-upload.php
       $(document).ajaxSend(function(event, xhr, settings) {
         if (settings && settings.url && settings.url.indexOf('async-upload.php') !== -1) {
-          xhr.setRequestHeader('X-R2G-Format', self.format);
-          xhr.setRequestHeader('X-R2G-Quality', self.quality);
-          xhr.setRequestHeader('X-R2G-Compress', (self.engine === 'none') ? 0 : self.compress);
-          xhr.setRequestHeader('X-R2G-Max-Width', self.maxWidth);
-          xhr.setRequestHeader('X-R2G-Storage-Mode', self.storageMode);
-          xhr.setRequestHeader('X-R2G-Engine', self.engine);
+          const uploadSettings = self.uploadSettings();
+          Object.keys(uploadSettings).forEach(function(key) {
+            xhr.setRequestHeader(self.uploadHeaderName(key), uploadSettings[key]);
+          });
         }
       });
     },
@@ -1013,12 +1095,10 @@
                   options.headers[name] = val;
                 }
               };
-              setHeader('X-R2G-Format', self.format);
-              setHeader('X-R2G-Quality', String(self.quality));
-              setHeader('X-R2G-Compress', String((self.engine === 'none') ? 0 : self.compress));
-              setHeader('X-R2G-Max-Width', String(self.maxWidth));
-              setHeader('X-R2G-Storage-Mode', self.storageMode);
-              setHeader('X-R2G-Engine', self.engine);
+              const settings = self.uploadSettings();
+              Object.keys(settings).forEach(function(key) {
+                setHeader(self.uploadHeaderName(key), String(settings[key]));
+              });
               if (self._clientCompressed) {
                 setHeader('X-R2G-Client-Compressed', '1');
               }
@@ -1059,18 +1139,13 @@
           if (self.config.interceptor === 0) {
             self.syncCookies();
             options.additionalData = options.additionalData || {};
-            options.additionalData['r2g_format'] = self.format;
-            options.additionalData['r2g_quality'] = self.quality;
-            options.additionalData['r2g_compress'] = (self.engine === 'none') ? 0 : self.compress;
-            options.additionalData['r2g_max_width'] = self.maxWidth;
-            options.additionalData['r2g_storage_mode'] = self.storageMode;
-            options.additionalData['r2g_engine'] = self.engine;
+            self.applySettings(options.additionalData);
 
             if (self.engine === 'browser') {
               return self.compressFileList(files).then(function(newFiles) {
                 options.filesList = newFiles;
-                options.additionalData['r2g_client_compressed'] = 1;
-                self._clientCompressed = true;
+                options.additionalData['r2g_client_compressed'] = newFiles.every(function(file) { return !self.isImage(file) || !!file._r2g_canvas_processed; }) ? 1 : 0;
+                self._clientCompressed = !!options.additionalData['r2g_client_compressed'];
                 const res = originalUploadMedia.call(wp.mediaUtils, options);
                 if (res && typeof res.finally === 'function') {
                   res.finally(function() { self._clientCompressed = false; });
@@ -1092,18 +1167,13 @@
               function() {
                 self.syncCookies();
                 options.additionalData = options.additionalData || {};
-                options.additionalData['r2g_format'] = self.format;
-                options.additionalData['r2g_quality'] = self.quality;
-                options.additionalData['r2g_compress'] = (self.engine === 'none') ? 0 : self.compress;
-                options.additionalData['r2g_max_width'] = self.maxWidth;
-                options.additionalData['r2g_storage_mode'] = self.storageMode;
-                options.additionalData['r2g_engine'] = self.engine;
+                self.applySettings(options.additionalData);
 
                 if (self.hasCompressedPreview && self.previewBlob && imageFiles.length === 1 && self.engine === 'browser') {
                   // Pre-compressed in browser preview
                   options.filesList = [self.previewBlob];
-                  options.additionalData['r2g_client_compressed'] = 1;
-                  self._clientCompressed = true;
+                  options.additionalData['r2g_client_compressed'] = self.previewBlob._r2g_canvas_processed ? 1 : 0;
+                  self._clientCompressed = !!options.additionalData['r2g_client_compressed'];
                   const res = originalUploadMedia.call(wp.mediaUtils, options);
                   if (res && typeof res.then === 'function') {
                     res.then(resolve).catch(reject).finally(function() {
@@ -1116,8 +1186,8 @@
                 } else if (self.engine === 'browser') {
                   self.compressFileList(files).then(function(newFiles) {
                     options.filesList = newFiles;
-                    options.additionalData['r2g_client_compressed'] = 1;
-                    self._clientCompressed = true;
+                    options.additionalData['r2g_client_compressed'] = newFiles.every(function(file) { return !self.isImage(file) || !!file._r2g_canvas_processed; }) ? 1 : 0;
+                    self._clientCompressed = !!options.additionalData['r2g_client_compressed'];
                     const res = originalUploadMedia.call(wp.mediaUtils, options);
                     if (res && typeof res.then === 'function') {
                       res.then(resolve).catch(reject).finally(function() {
@@ -1262,14 +1332,7 @@
                 form.appendChild(htmlUploadInput);
               }
 
-              const fields = {
-                'r2g_format': self.format,
-                'r2g_compress': (self.engine === 'none') ? 0 : self.compress,
-                'r2g_quality': self.quality,
-                'r2g_max_width': self.maxWidth,
-                'r2g_storage_mode': self.storageMode,
-                'r2g_engine': self.engine,
-              };
+              const fields = self.uploadSettings();
 
               for (const [k, v] of Object.entries(fields)) {
                 let inp = form.querySelector('input[name="' + k + '"]');
@@ -1283,7 +1346,7 @@
               }
 
               let clientInp = form.querySelector('input[name="r2g_client_compressed"]');
-              if (self.engine === 'browser') {
+              if (self.engine === 'browser' && input._r2g_client_compressed) {
                 if (!clientInp) {
                   clientInp = document.createElement('input');
                   clientInp.type = 'hidden';
@@ -1309,18 +1372,28 @@
                 const dt = new DataTransfer();
                 dt.items.add(self.previewBlob);
                 input.files = dt.files;
-              } catch (e) {}
+                input._r2g_client_compressed = input.files.length === 1 && input.files[0].name === self.previewBlob.name && !!self.previewBlob._r2g_canvas_processed;
+              } catch (e) {
+                input._r2g_client_compressed = false;
+              }
               submitForm();
             } else if (self.engine === 'browser' && window.DataTransfer) {
-              self.compressImageCanvas(input.files[0], self.format, self.quality, self.maxWidth).then(function(newBlob) {
+              self.getUploadFile(input.files[0]).then(function(newBlob) {
                 try {
                   const dt = new DataTransfer();
                   dt.items.add(newBlob);
                   input.files = dt.files;
-                } catch (e) {}
+                  input._r2g_client_compressed = input.files.length === 1 && input.files[0].name === newBlob.name && !!newBlob._r2g_canvas_processed;
+                } catch (e) {
+                  input._r2g_client_compressed = false;
+                }
                 submitForm();
-              }).catch(submitForm);
+              }).catch(function() {
+                input._r2g_client_compressed = false;
+                submitForm();
+              });
             } else {
+              input._r2g_client_compressed = false;
               submitForm();
             }
           },
@@ -1336,16 +1409,11 @@
       document.addEventListener('change', function(e) {
         const target = e.target;
         if (target && target.tagName === 'INPUT' && target.type === 'file') {
-          if (target.id === 'async-upload' || target.name === 'async-upload' || target.form?.id === 'file-form') {
+          if (target.form && target.form.id === 'file-form') {
             handleFileInput(target);
           }
         }
       }, true);
-
-      // jQuery fallback for change
-      $(document).on('change', '#async-upload, #file-form input[type="file"], input[type="file"][name="async-upload"]', function() {
-        handleFileInput(this);
-      });
 
       // Intercept submit button click on browser upload form
       $(document).on('click', '#html-upload, input[type="submit"][name="html-upload"]', function(e) {

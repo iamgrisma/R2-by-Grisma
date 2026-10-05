@@ -248,8 +248,8 @@ class R2G_Media_Handler {
      * Resolve effective upload preferences with strict hierarchy:
      * 1. Explicit POST parameters (e.g. from Plupload / FormData / AJAX)
      * 2. HTTP headers (e.g. from REST API / apiFetch)
-     * 3. Preset defaults (e.g. jpeg_high -> format: 'jpg', quality: 90)
-     * 4. Session cookie ONLY if preset is explicitly 'custom'
+     * 3. Explicit preset values
+     * 4. Session cookies, then site-wide defaults
      *
      * This guarantees a user selecting 'JPEG High Quality' or clicking 'JPG'
      * is NEVER overridden by a stale cookie set to 'webp'.
@@ -258,17 +258,19 @@ class R2G_Media_Handler {
      */
     public static function get_effective_upload_options() {
         $presets = self::get_presets();
+        $preset_id = isset($_POST['r2g_preset']) ? sanitize_key(wp_unslash($_POST['r2g_preset'])) : '';
+        $preset = isset($presets[$preset_id]) ? $presets[$preset_id] : null;
 
-        // 1. Format resolution: POST -> HTTP Header -> Cookie -> Preset fallback -> Site Default Option
+        // 1. Format resolution: Explicit request -> Preset -> Session cookie -> Site default
         $format = '';
         if (!empty($_POST['r2g_format'])) {
             $format = sanitize_text_field(wp_unslash($_POST['r2g_format']));
         } elseif (!empty($_SERVER['HTTP_X_R2G_FORMAT'])) {
             $format = sanitize_text_field(wp_unslash($_SERVER['HTTP_X_R2G_FORMAT']));
+        } elseif ($preset) {
+            $format = $preset['format'];
         } elseif (!empty($_COOKIE['r2g_format'])) {
             $format = sanitize_text_field(wp_unslash($_COOKIE['r2g_format']));
-        } elseif (!empty($_POST['r2g_preset']) && isset($presets[$_POST['r2g_preset']])) {
-            $format = $presets[$_POST['r2g_preset']]['format'];
         } else {
             $format = get_option('r2g_compress_format', 'webp');
         }
@@ -278,16 +280,16 @@ class R2G_Media_Handler {
             $format = 'jpg';
         }
 
-        // 2. Quality resolution: POST -> HTTP Header -> Cookie -> Preset fallback -> Site Default Option
+        // 2. Quality resolution: Explicit request -> Preset -> Session cookie -> Site default
         $quality = 0;
         if (isset($_POST['r2g_quality']) && $_POST['r2g_quality'] !== '') {
             $quality = (int)$_POST['r2g_quality'];
         } elseif (isset($_SERVER['HTTP_X_R2G_QUALITY']) && $_SERVER['HTTP_X_R2G_QUALITY'] !== '') {
             $quality = (int)$_SERVER['HTTP_X_R2G_QUALITY'];
+        } elseif ($preset) {
+            $quality = (int)$preset['quality'];
         } elseif (isset($_COOKIE['r2g_quality']) && $_COOKIE['r2g_quality'] !== '') {
             $quality = (int)$_COOKIE['r2g_quality'];
-        } elseif (!empty($_POST['r2g_preset']) && isset($presets[$_POST['r2g_preset']])) {
-            $quality = (int)$presets[$_POST['r2g_preset']]['quality'];
         } else {
             $quality = (int) get_option('r2g_compress_quality', 82);
         }
@@ -298,6 +300,8 @@ class R2G_Media_Handler {
             $compress = (int)$_POST['r2g_compress'];
         } elseif (isset($_SERVER['HTTP_X_R2G_COMPRESS']) && $_SERVER['HTTP_X_R2G_COMPRESS'] !== '') {
             $compress = (int)$_SERVER['HTTP_X_R2G_COMPRESS'];
+        } elseif ($preset) {
+            $compress = (int)$preset['compress'];
         } elseif (isset($_COOKIE['r2g_compress']) && $_COOKIE['r2g_compress'] !== '') {
             $compress = (int)$_COOKIE['r2g_compress'];
         } else {
@@ -309,6 +313,8 @@ class R2G_Media_Handler {
             $max_width = (int)$_POST['r2g_max_width'];
         } elseif (isset($_SERVER['HTTP_X_R2G_MAX_WIDTH']) && $_SERVER['HTTP_X_R2G_MAX_WIDTH'] !== '') {
             $max_width = (int)$_SERVER['HTTP_X_R2G_MAX_WIDTH'];
+        } elseif ($preset) {
+            $max_width = (int)$preset['max_width'];
         } elseif (isset($_COOKIE['r2g_max_width']) && $_COOKIE['r2g_max_width'] !== '') {
             $max_width = (int)$_COOKIE['r2g_max_width'];
         } else {
@@ -334,6 +340,7 @@ class R2G_Media_Handler {
         if ($engine === 'none') {
             $compress = 0;
             $format = 'original';
+            $max_width = 0;
         }
 
         // 6. Storage Mode resolution:
@@ -420,6 +427,15 @@ class R2G_Media_Handler {
             'engine'            => $opts['engine'],
             'client_compressed' => $opts['client_compressed'],
         ));
+
+        // A WebP policy is strict for new uploads: never report success while
+        // silently storing the original JPEG/PNG because conversion failed.
+        if (empty($opt_res['success']) && $opts['format'] === 'webp' && strtolower(pathinfo($file_path, PATHINFO_EXTENSION)) !== 'webp') {
+            $upload['error'] = !empty($opt_res['message'])
+                ? $opt_res['message']
+                : __('WebP conversion failed. The image was not accepted; check server image support and retry.', 'r2-by-grisma');
+            return $upload;
+        }
 
         if ($opt_res['success'] && !empty($opt_res['file_path'])) {
             $new_file = $opt_res['file_path'];
@@ -537,6 +553,9 @@ class R2G_Media_Handler {
         // If batch options are provided during bulk sync (wildcard conversion), apply before upload:
         if (!empty($batch_options) && is_array($batch_options) && !empty($batch_options['format'])) {
             $opt_res = R2G_Optimizer::optimize_local_file($file_path, $batch_options);
+            if (empty($opt_res['success'])) {
+                return false;
+            }
             if ($opt_res['success'] && !empty($opt_res['file_path']) && $opt_res['file_path'] !== $file_path) {
                 update_attached_file($attachment_id, $opt_res['file_path']);
                 $file_path = $opt_res['file_path'];
@@ -633,6 +652,11 @@ class R2G_Media_Handler {
      * @return bool
      */
     public static function delete_local_files($attachment_id, $file_path = null, $metadata = null) {
+        $attachment_id = (int) $attachment_id;
+        if ($attachment_id <= 0) {
+            return false;
+        }
+
         if (!$file_path) {
             $file_path = get_attached_file($attachment_id);
         }
@@ -640,20 +664,44 @@ class R2G_Media_Handler {
             $metadata = wp_get_attachment_metadata($attachment_id);
         }
 
+        if (!$file_path || !file_exists($file_path)) {
+            return false;
+        }
+
         // Check cleanup scope: 'all' vs 'original_only'
         $cleanup_scope = get_option('r2g_cleanup_scope', 'all');
 
-        if ($file_path && file_exists($file_path)) {
-            @unlink($file_path);
-        }
-
-        if ($cleanup_scope === 'all' && !empty($metadata['sizes']) && is_array($metadata['sizes']) && $file_path) {
+        // Never remove a local copy based only on a database flag. Verify every
+        // existing local file covered by this cleanup directly against R2 first.
+        $paths = array($file_path);
+        $upload_sizes_mode = get_option('r2g_upload_sizes', 'all');
+        if ($cleanup_scope === 'all' && $upload_sizes_mode === 'all' && !empty($metadata['sizes']) && is_array($metadata['sizes'])) {
             $dir = dirname($file_path);
             foreach ($metadata['sizes'] as $size_info) {
+                if (empty($size_info['file'])) {
+                    continue;
+                }
                 $thumb_path = $dir . '/' . $size_info['file'];
                 if (file_exists($thumb_path)) {
-                    @unlink($thumb_path);
+                    $paths[] = $thumb_path;
                 }
+            }
+        }
+
+        $client = r2_by_grisma()->get_client();
+        if (!$client || !$client->is_configured()) {
+            return false;
+        }
+        foreach ($paths as $path) {
+            $key = self::get_r2_key_from_path($path);
+            if (!$key || !$client->object_exists($key)) {
+                return false;
+            }
+        }
+
+        foreach ($paths as $path) {
+            if (file_exists($path) && !@unlink($path)) {
+                return false;
             }
         }
 

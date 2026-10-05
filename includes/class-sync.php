@@ -58,7 +58,10 @@ class R2G_Sync {
         $format  = sanitize_text_field($_POST['format'] ?? '');
         $preset  = sanitize_text_field($_POST['preset'] ?? '');
         $quality = isset($_POST['quality']) ? (int)$_POST['quality'] : 0;
-        $engine  = sanitize_text_field($_POST['engine'] ?? 'server');
+        $engine  = sanitize_key($_POST['engine'] ?? 'server');
+        if (!in_array($engine, array('server', 'resmush', 'none'), true)) {
+            $engine = 'server';
+        }
 
         $batch_options = array();
         if ($format && $format !== 'keep' && $format !== 'keep_current' && $format !== 'none') {
@@ -161,13 +164,17 @@ class R2G_Sync {
         }
 
         $cleaned = 0;
+        $failed = 0;
         foreach ($ids as $id) {
             $attachment_id = (int) $id;
             $record = R2G_Database::get($attachment_id);
             // Verify item has valid R2 key and synced status before cleaning local file
             if ($record && $record->status === 'synced' && !empty($record->r2_key)) {
-                R2G_Media_Handler::delete_local_files($attachment_id);
-                $cleaned++;
+                if (R2G_Media_Handler::delete_local_files($attachment_id)) {
+                    $cleaned++;
+                } else {
+                    $failed++;
+                }
             }
         }
 
@@ -175,6 +182,7 @@ class R2G_Sync {
 
         wp_send_json_success(array(
             'cleaned_count'       => $cleaned,
+            'failed_count'        => $failed,
             'remaining'           => $remaining_count,
             'done'                => ($remaining_count === 0),
             'stats'               => R2G_Database::get_stats(),

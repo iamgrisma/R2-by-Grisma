@@ -328,7 +328,6 @@ class R2G_Media_Library {
      */
     public function register_bulk_actions($bulk_actions) {
         $bulk_actions['r2g_bulk_push']         = esc_html__('Push to Cloudflare R2', 'r2-by-grisma');
-        $bulk_actions['r2g_bulk_delete_local']  = esc_html__('Delete Local Files (Offload to R2)', 'r2-by-grisma');
         $bulk_actions['r2g_bulk_download']      = esc_html__('Download from R2 to Local', 'r2-by-grisma');
         $bulk_actions['r2g_bulk_delete_r2']     = esc_html__('Remove from Cloudflare R2', 'r2-by-grisma');
         return $bulk_actions;
@@ -354,14 +353,6 @@ class R2G_Media_Library {
             switch ($action) {
                 case 'r2g_bulk_push':
                     if (R2G_Media_Handler::sync_attachment_to_r2($id, true)) {
-                        $count++;
-                    }
-                    break;
-
-                case 'r2g_bulk_delete_local':
-                    $rec = class_exists('R2G_Database') ? R2G_Database::get($id) : null;
-                    if (get_post_meta($id, '_r2g_synced', true) || ($rec && $rec->status === 'synced')) {
-                        R2G_Media_Handler::delete_local_files($id);
                         $count++;
                     }
                     break;
@@ -399,7 +390,6 @@ class R2G_Media_Library {
 
         $messages = array(
             'r2g_bulk_push'         => sprintf(esc_html__('Successfully pushed %d media items to Cloudflare R2.', 'r2-by-grisma'), $count),
-            'r2g_bulk_delete_local' => sprintf(esc_html__('Deleted local server files for %d attachments (Offloaded to R2).', 'r2-by-grisma'), $count),
             'r2g_bulk_download'     => sprintf(esc_html__('Downloaded %d files from R2 back to local server disk.', 'r2-by-grisma'), $count),
             'r2g_bulk_delete_r2'    => sprintf(esc_html__('Removed %d attachments from Cloudflare R2 bucket.', 'r2-by-grisma'), $count),
         );
@@ -466,7 +456,7 @@ class R2G_Media_Library {
             $html .= '<button type="button" class="button button-small r2g-row-action" data-action="r2g_sync_single" data-id="' . esc_attr($id) . '">' . esc_html__('Push to R2', 'r2-by-grisma') . '</button>';
         }
         if ($is_synced && $has_local) {
-            $html .= '<button type="button" class="button button-small r2g-row-action" data-action="r2g_delete_local_single" data-id="' . esc_attr($id) . '" data-confirm="' . esc_attr__('Delete local server copy? The file stays safe on Cloudflare R2.', 'r2-by-grisma') . '">' . esc_html__('Delete Local Copy', 'r2-by-grisma') . '</button>';
+            $html .= '<button type="button" class="button button-small r2g-row-action" data-action="r2g_delete_local_single" data-id="' . esc_attr($id) . '" data-confirm="' . esc_attr__('This permanently deletes the local original and generated sizes after checking each file exists on R2. R2 will be your only copy. Confirm you have an independent backup or are comfortable restoring from R2.', 'r2-by-grisma') . '">' . esc_html__('Delete Local Copy', 'r2-by-grisma') . '</button>';
             $html .= '<button type="button" class="button button-small r2g-row-action r2g-btn-danger" data-action="r2g_delete_r2_single" data-id="' . esc_attr($id) . '" data-confirm="' . esc_attr__('Remove from Cloudflare R2?', 'r2-by-grisma') . '">' . esc_html__('Remove from R2', 'r2-by-grisma') . '</button>';
         }
         if ($is_synced && !$has_local) {
@@ -533,8 +523,11 @@ class R2G_Media_Library {
         }
 
         $id = (int)($_POST['id'] ?? 0);
-        R2G_Media_Handler::delete_local_files($id);
-        wp_send_json_success(array('message' => esc_html__('Local file deleted. Cloud copy retained safely on R2.', 'r2-by-grisma')));
+        $ok = R2G_Media_Handler::delete_local_files($id);
+        if (!$ok) {
+            wp_send_json_error(array('message' => esc_html__('Local files were kept. R2 could not verify every file that would be deleted, or the server could not remove a file. Check the R2 connection and sync status first.', 'r2-by-grisma')));
+        }
+        wp_send_json_success(array('message' => esc_html__('Local files deleted after R2 verification.', 'r2-by-grisma')));
     }
 
     /**

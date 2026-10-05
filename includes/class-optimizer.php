@@ -81,16 +81,30 @@ class R2G_Optimizer {
             $format = 'jpg';
         }
         $compress = isset($options['compress']) ? (bool)$options['compress'] : true;
+        $max_width = (int)($options['max_width'] ?? 1920);
         if ($engine === 'none') {
             $compress = false;
+            $format = 'original';
+            $max_width = 0;
         }
         $quality = (int)($options['quality'] ?? 82);
-        $max_width = (int)($options['max_width'] ?? 1920);
 
         $path_info = pathinfo($file_path);
         $current_ext = strtolower($path_info['extension'] ?? '');
         if ($current_ext === 'jpeg') {
             $current_ext = 'jpg';
+        }
+
+        if ($format === 'webp' && $current_ext !== 'webp' && !self::can_generate_webp()) {
+            return array(
+                'success'     => false,
+                'file_path'   => $file_path,
+                'mime'        => '',
+                'width'       => 0,
+                'height'      => 0,
+                'bytes_saved' => 0,
+                'message'     => __('WebP conversion is required but this server cannot create WebP images.', 'r2-by-grisma'),
+            );
         }
 
         // Determine if format conversion is requested and differs from current
@@ -110,26 +124,61 @@ class R2G_Optimizer {
             return array('success' => true, 'file_path' => $file_path, 'mime' => '', 'width' => 0, 'height' => 0, 'bytes_saved' => 0);
         }
 
-        // If browser already pre-compressed and no format conversion needed
+        $original_size = filesize($file_path);
+        $resmush_result = null;
+        $resmush_succeeded = false;
+
+        // Send the source format to reSmush before server conversion. The API
+        // does not accept WebP, so converting to WebP first forced every such
+        // upload down the GD/Imagick fallback path.
+        if ($engine === 'resmush' && $compress) {
+            if ($original_size <= 5242880 && $original_size > 0) {
+                $resmush_result = self::resmush_file($file_path, $quality);
+            } else {
+                $resmush_result = array(
+                    'success' => false,
+                    'status'  => 'exceeds_size',
+                    'message' => __('Image exceeds 5MB reSmush.it limit. Processed via Server GD/Imagick fallback.', 'r2-by-grisma'),
+                );
+            }
+            $resmush_succeeded = !empty($resmush_result['success']);
+        }
+
+        // Browser uploads already contain the requested format and dimensions.
+        // Return without running a second server encode when that is true.
         if ($engine === 'browser' && !empty($options['client_compressed']) && !$needs_format_change) {
             return array('success' => true, 'file_path' => $file_path, 'mime' => '', 'width' => 0, 'height' => 0, 'bytes_saved' => 0);
         }
 
-        $original_size = filesize($file_path);
+        // A successful API response is the complete operation when the source
+        // already has the requested format and dimensions.
+        $source_info = @getimagesize($file_path);
+        $resize_required = $max_width > 0 && !empty($source_info[0]) && $source_info[0] > $max_width;
+        if ($resmush_succeeded && !$needs_format_change && !$resize_required) {
+            $mime = !empty($source_info['mime']) ? $source_info['mime'] : '';
+            return array(
+                'success'        => true,
+                'file_path'      => $file_path,
+                'mime'           => $mime,
+                'width'          => (int)($source_info[0] ?? 0),
+                'height'         => (int)($source_info[1] ?? 0),
+                'bytes_saved'    => max(0, $original_size - filesize($file_path)),
+                'resmush_result' => $resmush_result,
+            );
+        }
 
         $editor = wp_get_image_editor($file_path);
         if (is_wp_error($editor)) {
             return array('success' => false, 'file_path' => $file_path, 'mime' => '', 'width' => 0, 'height' => 0, 'bytes_saved' => 0);
         }
 
-        // Set compression quality for server / fallback
-        if ($compress) {
-            $editor->set_quality($quality);
-        }
-
         // Resize if larger than max width
         $size = $editor->get_size();
-        if ($max_width > 0 && !empty($size['width']) && $size['width'] > $max_width) {
+        $resize_required = $max_width > 0 && !empty($size['width']) && $size['width'] > $max_width;
+        if ($compress && (!$resmush_succeeded || $needs_format_change || $resize_required)) {
+            $editor->set_quality($quality);
+        }
+        if ($resize_required) {
             $editor->resize($max_width, null, false);
         }
 
@@ -180,23 +229,6 @@ class R2G_Optimizer {
         // If converted to a new format/file and distinct from original, delete old original file
         if ($final_path !== $file_path && file_exists($file_path)) {
             @unlink($file_path);
-        }
-
-        $resmush_result = null;
-
-        // If reSmush.it engine is selected, attempt reSmush compression with automatic fallback
-        if ($engine === 'resmush' && $compress && file_exists($final_path)) {
-            $current_file_size = filesize($final_path);
-            // reSmush.it limit: max 5MB (5242880 bytes)
-            if ($current_file_size <= 5242880 && $current_file_size > 0) {
-                $resmush_result = self::resmush_file($final_path, $quality);
-            } else {
-                $resmush_result = array(
-                    'success' => false,
-                    'status'  => 'exceeds_size',
-                    'message' => __('Image exceeds 5MB reSmush.it limit. Processed via Server GD/Imagick fallback.', 'r2-by-grisma'),
-                );
-            }
         }
 
         $new_size = file_exists($final_path) ? filesize($final_path) : $original_size;
@@ -307,7 +339,9 @@ class R2G_Optimizer {
 
         $new_bytes = wp_remote_retrieve_body($compressed_img);
         if (strlen($new_bytes) > 0 && strlen($new_bytes) < $size) {
-            @file_put_contents($file_path, $new_bytes);
+            if (@file_put_contents($file_path, $new_bytes) === false) {
+                return array('success' => false, 'status' => 'write_error', 'message' => __('Could not save reSmush optimized image; using the server processed image.', 'r2-by-grisma'));
+            }
             return array(
                 'success' => true,
                 'status'  => 'success',

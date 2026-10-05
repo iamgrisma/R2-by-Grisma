@@ -3,7 +3,7 @@
  * Plugin Name: R2 by Grisma
  * Plugin URI: https://grisma.com.np
  * Description: Enterprise Cloudflare R2 sync with client-side Browser Edge compression, on-site WebP conversion, custom CDN delivery, and zero vendor bloat.
- * Version: 1.0.19
+ * Version: 1.0.20
  * Author: Grisma
  * Author URI: https://grisma.com.np
  * License: GPL v2 or later
@@ -19,7 +19,7 @@ if (!defined('ABSPATH')) {
 }
 
 // Define Constants
-define('R2G_VERSION', '1.0.19');
+define('R2G_VERSION', '1.0.20');
 define('R2G_FILE', __FILE__);
 define('R2G_PATH', plugin_dir_path(__FILE__));
 define('R2G_URL', plugin_dir_url(__FILE__));
@@ -94,7 +94,7 @@ class R2_By_Grisma {
             if (!get_option('r2g_compress_quality')) {
                 update_option('r2g_compress_quality', 82);
             }
-            if (!get_option('r2g_max_width')) {
+            if (get_option('r2g_max_width', null) === null) {
                 update_option('r2g_max_width', 1920);
             }
             if (!get_option('r2g_active_preset')) {
@@ -183,7 +183,7 @@ register_activation_hook(__FILE__, function() {
     if (!get_option('r2g_compress_quality')) {
         add_option('r2g_compress_quality', 82);
     }
-    if (!get_option('r2g_max_width')) {
+    if (get_option('r2g_max_width', null) === null) {
         add_option('r2g_max_width', 1920);
     }
     if (!get_option('r2g_active_preset')) {
