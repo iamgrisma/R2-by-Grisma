@@ -1,6 +1,6 @@
 /**
  * R2 by Grisma — Universal Upload Interceptor & In-Browser Image Optimizer
- * Version: 1.0.17
+ * Version: 1.0.18
  *
  * Core Features:
  * 1. ZERO sticky bars in the DOM on page load.
@@ -11,16 +11,18 @@
  * 3. Settings Defaults:
  *    - Modal defaults directly to the plugin settings configured in Settings -> R2 by Grisma.
  *    - Fully customizable on every upload without restriction.
- * 4. In-Browser Compress Preview:
+ * 4. Dual-Engine Compress Preview:
  *    - Dedicated "⚡ Preview Compression" button.
- *    - Generates client-side Canvas blob immediately in browser memory with selected format & quality.
- *    - Shows before vs after preview, exact byte sizes, and green savings percentage badge (-XX%).
+ *    - When Browser Canvas engine is selected: generates client-side Canvas blob immediately in browser memory.
+ *    - When Server GD or reSmush.it is selected: executes server optimization preview via AJAX and displays real output with exact byte savings.
+ *    - When Lossless is selected: displays unaltered source image.
  *    - Action buttons seamlessly adapt:
  *      * Before Preview: [Cancel Upload] and [⚡ Compress & Upload]
- *      * After Preview:  [Cancel Upload] and [✓ Upload Now] (already compressed!)
+ *      * After Preview:  [Cancel Upload] and [✓ Upload Now]
  *      * If settings changed after preview: Preview button shows [⚡ Re-compress], action button returns to [⚡ Compress & Upload].
  * 5. Robust Drag-and-Drop & Multi-File Batch Wildcard (*):
  *    - Global drag-and-drop interception across all editors and library.
+ *    - Synchronized with Gutenberg core/block-editor and core/editor stores.
  *    - Compact batch carousel with thumbnail switcher and wildcard mode.
  * 6. Bulletproof Event Propagation:
  *    - Direct element event binding with stopPropagation to ensure Gutenberg/React never captures or blocks clicks and slider dragging.
@@ -41,6 +43,8 @@
       compress: 1,
       quality: 82,
       maxWidth: 1920,
+      ajax_url: (typeof window !== 'undefined' && window.ajaxurl) ? window.ajaxurl : '/wp-admin/admin-ajax.php',
+      nonce: '',
     },
 
     normalizeFormat: function(fmt) {
@@ -460,7 +464,10 @@
     },
 
     /**
-     * Run in-browser preview compression on the current active image file
+     * Run preview compression on the current active image file
+     * - Browser Canvas: processes HTML5 Canvas locally in client memory
+     * - Server GD / reSmush.it: requests server preview via AJAX to obtain exact base64 and real byte savings
+     * - Lossless: shows unaltered image data
      */
     runPreviewCompression: function(nativeFile) {
       const self = this;
@@ -468,51 +475,118 @@
       const $label = $btn.find('.r2g-preview-btn-text');
 
       $btn.prop('disabled', true);
-      $label.text('Compressing in browser...');
 
-      self.compressImageCanvas(nativeFile, self.format, self.quality, self.maxWidth).then(function(newBlob) {
-        $btn.prop('disabled', false);
-        if (!newBlob) {
+      if (self.engine === 'browser') {
+        $label.text('Compressing in browser...');
+        self.compressImageCanvas(nativeFile, self.format, self.quality, self.maxWidth).then(function(newBlob) {
+          $btn.prop('disabled', false);
+          if (!newBlob) {
+            $label.text('⚡ Preview Compression');
+            return;
+          }
+
+          self.previewBlob = newBlob;
+          self.hasCompressedPreview = true;
+          nativeFile._r2g_compressed = newBlob;
+
+          const compUrl = URL.createObjectURL(newBlob);
+          $('#r2g-preview-img').attr('src', compUrl);
+          $('#r2g-preview-tag').text('PREVIEW (BROWSER CANVAS: ' + self.format.toUpperCase() + ')').css({ background: '#0284c7' });
+
+          self.updateSavingsDisplay(nativeFile.size || 1, newBlob.size || 1);
+          self.adaptButtonsAfterPreview();
+        }).catch(function() {
+          $btn.prop('disabled', false);
           $label.text('⚡ Preview Compression');
-          return;
-        }
+        });
+      } else if (self.engine === 'server' || self.engine === 'resmush') {
+        const engTitle = (self.engine === 'resmush') ? 'reSmush.it API' : 'Server GD';
+        $label.text('Optimizing with ' + engTitle + '...');
 
-        self.previewBlob = newBlob;
+        const formData = new FormData();
+        formData.append('action', 'r2g_preview_compression');
+        formData.append('nonce', (self.config && self.config.nonce) ? self.config.nonce : '');
+        formData.append('format', self.format);
+        formData.append('quality', self.quality);
+        formData.append('max_width', self.maxWidth);
+        formData.append('engine', self.engine);
+        formData.append('image', nativeFile);
+
+        const ajaxUrl = (self.config && self.config.ajax_url) ? self.config.ajax_url : (window.ajaxurl || '/wp-admin/admin-ajax.php');
+
+        $.ajax({
+          url: ajaxUrl,
+          type: 'POST',
+          data: formData,
+          processData: false,
+          contentType: false,
+          dataType: 'json',
+          success: function(res) {
+            $btn.prop('disabled', false);
+            if (res.success && res.data && res.data.data_url) {
+              self.hasCompressedPreview = true;
+              self.previewBlob = null; // Processed by PHP upon upload
+              delete nativeFile._r2g_compressed;
+
+              $('#r2g-preview-img').attr('src', res.data.data_url);
+              $('#r2g-preview-tag').text('PREVIEW (' + engTitle.toUpperCase() + ': ' + self.format.toUpperCase() + ')').css({ background: '#7c3aed' });
+
+              self.updateSavingsDisplay(res.data.orig_size, res.data.comp_size);
+              self.adaptButtonsAfterPreview();
+            } else {
+              alert('Optimization preview failed: ' + (res.data?.message || 'Server error'));
+              $label.text('⚡ Preview Compression');
+            }
+          },
+          error: function(xhr, status, error) {
+            $btn.prop('disabled', false);
+            alert('Preview request failed: ' + error);
+            $label.text('⚡ Preview Compression');
+          }
+        });
+      } else if (self.engine === 'none') {
+        $btn.prop('disabled', false);
         self.hasCompressedPreview = true;
-        nativeFile._r2g_compressed = newBlob;
+        self.previewBlob = null;
+        delete nativeFile._r2g_compressed;
 
-        // Update preview image
-        const compUrl = URL.createObjectURL(newBlob);
-        $('#r2g-preview-img').attr('src', compUrl);
-        $('#r2g-preview-tag').text('COMPRESSED (' + self.format.toUpperCase() + ')').css({ background: '#0284c7' });
-
-        // Calculate size reduction
-        const origSize = nativeFile.size || 1;
-        const compSize = newBlob.size || 1;
-        const pct = Math.round(((origSize - compSize) / origSize) * 100);
-
-        $('#r2g-stat-orig').text(self.formatBytes(origSize));
-        $('#r2g-stat-comp').text(self.formatBytes(compSize));
-
-        if (pct > 0) {
-          $('#r2g-stat-saving').text('-' + pct + '%').css({ background: '#15803d' });
-        } else if (pct < 0) {
-          $('#r2g-stat-saving').text('+' + Math.abs(pct) + '%').css({ background: '#475569' });
-        } else {
-          $('#r2g-stat-saving').text('0%').css({ background: '#475569' });
+        if (nativeFile instanceof Blob) {
+          $('#r2g-preview-img').attr('src', URL.createObjectURL(nativeFile));
         }
+        $('#r2g-preview-tag').text('PREVIEW (RAW LOSSLESS)').css({ background: '#475569' });
+        self.updateSavingsDisplay(nativeFile.size || 1, nativeFile.size || 1);
+        self.adaptButtonsAfterPreview();
+      }
+    },
 
-        $('#r2g-stat-dirty-note').hide();
-        $('#r2g-compress-result').show();
+    updateSavingsDisplay: function(origSize, compSize) {
+      const self = this;
+      origSize = origSize || 1;
+      compSize = compSize || 1;
+      const pct = Math.round(((origSize - compSize) / origSize) * 100);
 
-        // Button transitions
-        $label.text('✓ Re-compress');
-        $btn.addClass('r2g-recompress');
+      $('#r2g-stat-orig').text(self.formatBytes(origSize));
+      $('#r2g-stat-comp').text(self.formatBytes(compSize));
 
-        // Modal action button adapts:
-        $('#r2g-btn-modal-proceed').addClass('r2g-ready-upload');
-        $('#r2g-proceed-label').text('✓ Upload Now');
-      });
+      if (pct > 0) {
+        $('#r2g-stat-saving').text('-' + pct + '%').css({ background: '#15803d' });
+      } else if (pct < 0) {
+        $('#r2g-stat-saving').text('+' + Math.abs(pct) + '%').css({ background: '#475569' });
+      } else {
+        $('#r2g-stat-saving').text('0%').css({ background: '#475569' });
+      }
+
+      $('#r2g-stat-dirty-note').hide();
+      $('#r2g-compress-result').show();
+    },
+
+    adaptButtonsAfterPreview: function() {
+      const $btn = $('#r2g-btn-preview-compress');
+      $btn.find('.r2g-preview-btn-text').text('✓ Re-compress');
+      $btn.addClass('r2g-recompress');
+
+      $('#r2g-btn-modal-proceed').addClass('r2g-ready-upload');
+      $('#r2g-proceed-label').text('✓ Upload Now');
     },
 
     /**
@@ -622,21 +696,21 @@
       });
 
       // Bind format buttons directly on modal
-      $modal.find('.r2g-format-btn').on('click pointerup', function(e) {
+      $modal.find('.r2g-format-btn').off('click').on('click', function(e) {
         e.preventDefault();
         e.stopPropagation();
         self.setFormat($(this).data('format'));
       });
 
       // Bind engine buttons directly on modal
-      $modal.find('.r2g-engine-btn').on('click pointerup', function(e) {
+      $modal.find('.r2g-engine-btn').off('click').on('click', function(e) {
         e.preventDefault();
         e.stopPropagation();
         self.setEngine($(this).data('engine'));
       });
 
       // Bind storage destination buttons directly on modal
-      $modal.find('.r2g-storage-btn').on('click pointerup', function(e) {
+      $modal.find('.r2g-storage-btn').off('click').on('click', function(e) {
         e.preventDefault();
         e.stopPropagation();
         self.setStorageMode($(this).data('storage'));
@@ -644,6 +718,7 @@
 
       // Bind quality slider directly on modal (stops Gutenberg pointer theft)
       $modal.find('.r2g-quality-slider')
+        .off('pointerdown mousedown touchstart input change')
         .on('pointerdown mousedown touchstart', function(e) {
           e.stopPropagation();
         })
@@ -653,7 +728,7 @@
         });
 
       // Bind batch thumbnail clicks
-      $modal.find('.r2g-batch-thumb-item').on('click pointerup', function(e) {
+      $modal.find('.r2g-batch-thumb-item').off('click').on('click', function(e) {
         e.preventDefault();
         e.stopPropagation();
         const idx = parseInt($(this).data('idx'), 10) || 0;
@@ -661,7 +736,7 @@
       });
 
       // Bind Compress Preview button
-      $modal.find('#r2g-btn-preview-compress').on('click pointerup', function(e) {
+      $modal.find('#r2g-btn-preview-compress').off('click').on('click', function(e) {
         e.preventDefault();
         e.stopPropagation();
         const currentFile = files[activeIndex];
@@ -675,7 +750,7 @@
       };
 
       // Close handlers: Cancel button & Close X
-      $modal.find('#r2g-btn-modal-close, #r2g-btn-modal-cancel').on('click pointerup', function(e) {
+      $modal.find('#r2g-btn-modal-close, #r2g-btn-modal-cancel').off('click').on('click', function(e) {
         e.preventDefault();
         e.stopPropagation();
         closeModal();
@@ -683,7 +758,7 @@
       });
 
       // Close handler: Backdrop click outside the card
-      $modal.on('click', function(e) {
+      $modal.off('click').on('click', function(e) {
         if ($(e.target).is('#r2g-interceptor-modal')) {
           e.preventDefault();
           closeModal();
@@ -700,7 +775,7 @@
       });
 
       // Proceed handler: Start upload
-      $modal.find('#r2g-btn-modal-proceed').on('click pointerup', function(e) {
+      $modal.find('#r2g-btn-modal-proceed').off('click').on('click', function(e) {
         e.preventDefault();
         e.stopPropagation();
 
@@ -891,7 +966,7 @@
 
         const originalUploadMedia = wp.mediaUtils.uploadMedia;
 
-        wp.mediaUtils.uploadMedia = function(options) {
+        const wrappedUploadMedia = function(options) {
           if (!options || !options.filesList || options.filesList.length === 0) {
             return originalUploadMedia.apply(this, arguments);
           }
@@ -914,45 +989,107 @@
                 options.filesList = newFiles;
                 self._clientCompressed = true;
                 const res = originalUploadMedia.call(wp.mediaUtils, options);
-                self._clientCompressed = false;
+                if (res && typeof res.finally === 'function') {
+                  res.finally(function() { self._clientCompressed = false; });
+                } else {
+                  setTimeout(function() { self._clientCompressed = false; }, 3000);
+                }
                 return res;
               });
             }
             return originalUploadMedia.call(wp.mediaUtils, options);
           }
 
-          // Show Interceptor Modal before Gutenberg uploads to server!
-          self.showInterceptorModal(
-            null,
-            imageFiles,
-            // onProceed:
-            function() {
-              self.syncCookies();
-              if (self.hasCompressedPreview && self.previewBlob && imageFiles.length === 1) {
-                // Pre-compressed in preview
-                options.filesList = [self.previewBlob];
-                self._clientCompressed = true;
-                originalUploadMedia.call(wp.mediaUtils, options);
-                self._clientCompressed = false;
-              } else if (self.engine === 'browser') {
-                self.compressFileList(files).then(function(newFiles) {
-                  options.filesList = newFiles;
+          // MUST return a Promise so Gutenberg promise chains never break or hang!
+          return new Promise(function(resolve, reject) {
+            self.showInterceptorModal(
+              null,
+              imageFiles,
+              // onProceed:
+              function() {
+                self.syncCookies();
+                if (self.hasCompressedPreview && self.previewBlob && imageFiles.length === 1 && self.engine === 'browser') {
+                  // Pre-compressed in browser preview
+                  options.filesList = [self.previewBlob];
                   self._clientCompressed = true;
-                  originalUploadMedia.call(wp.mediaUtils, options);
+                  const res = originalUploadMedia.call(wp.mediaUtils, options);
+                  if (res && typeof res.then === 'function') {
+                    res.then(resolve).catch(reject).finally(function() {
+                      self._clientCompressed = false;
+                    });
+                  } else {
+                    resolve(res);
+                    setTimeout(function() { self._clientCompressed = false; }, 3000);
+                  }
+                } else if (self.engine === 'browser') {
+                  self.compressFileList(files).then(function(newFiles) {
+                    options.filesList = newFiles;
+                    self._clientCompressed = true;
+                    const res = originalUploadMedia.call(wp.mediaUtils, options);
+                    if (res && typeof res.then === 'function') {
+                      res.then(resolve).catch(reject).finally(function() {
+                        self._clientCompressed = false;
+                      });
+                    } else {
+                      resolve(res);
+                      setTimeout(function() { self._clientCompressed = false; }, 3000);
+                    }
+                  }).catch(reject);
+                } else {
                   self._clientCompressed = false;
-                });
-              } else {
-                originalUploadMedia.call(wp.mediaUtils, options);
+                  const res = originalUploadMedia.call(wp.mediaUtils, options);
+                  if (res && typeof res.then === 'function') {
+                    res.then(resolve).catch(reject);
+                  } else {
+                    resolve(res);
+                  }
+                }
+              },
+              // onCancel:
+              function() {
+                if (typeof options.onError === 'function') {
+                  options.onError(new Error('Upload cancelled.'));
+                }
+                reject(new Error('Upload cancelled.'));
               }
-            },
-            // onCancel:
-            function() {
-              if (typeof options.onError === 'function') {
-                options.onError(new Error('Upload cancelled.'));
-              }
-            }
-          );
+            );
+          });
         };
+
+        wp.mediaUtils.uploadMedia = wrappedUploadMedia;
+
+        // Synchronize wrapped function with core/block-editor and core/editor settings
+        const syncEditorStores = function() {
+          if (typeof window.wp === 'undefined' || !wp.data || !wp.data.dispatch) return;
+          try {
+            const be = wp.data.dispatch('core/block-editor');
+            if (be && be.updateSettings) {
+              be.updateSettings({ mediaUpload: wrappedUploadMedia });
+            }
+          } catch (e) {}
+          try {
+            const ed = wp.data.dispatch('core/editor');
+            if (ed && ed.updateSettings) {
+              ed.updateSettings({ mediaUpload: wrappedUploadMedia });
+            }
+          } catch (e) {}
+        };
+
+        syncEditorStores();
+
+        // Subscribe to store updates to keep mediaUpload wrapped if Gutenberg resets settings
+        if (typeof window.wp !== 'undefined' && wp.data && wp.data.subscribe) {
+          wp.data.subscribe(function() {
+            try {
+              if (wp.data.select && wp.data.select('core/block-editor')) {
+                const s = wp.data.select('core/block-editor').getSettings();
+                if (s && s.mediaUpload && s.mediaUpload !== wrappedUploadMedia) {
+                  syncEditorStores();
+                }
+              }
+            } catch (e) {}
+          });
+        }
 
         return true;
       };
@@ -960,19 +1097,21 @@
       if (!wrapGutenberg()) {
         const gTimer = setInterval(function() {
           if (wrapGutenberg()) clearInterval(gTimer);
-        }, 200);
-        setTimeout(function() { clearInterval(gTimer); }, 15000);
+        }, 150);
+        setTimeout(function() { clearInterval(gTimer); }, 20000);
       }
     },
 
     /**
      * Intercept browser single-file uploader form (media-new.php?browser-uploader)
+     * Handles both file selection and submit clicks with native capture-phase listeners
      */
     hookBrowserForm: function() {
       const self = this;
 
       const handleFileInput = function(input) {
         if (!input || !input.files || input.files.length === 0) return;
+        if (input._r2g_processing) return;
 
         const files = Array.from(input.files);
         const imageFiles = files.filter(function(f) {
@@ -981,6 +1120,7 @@
         if (imageFiles.length === 0 || self.config.interceptor === 0) return;
 
         const form = input.form || $(input).closest('form')[0];
+        input._r2g_processing = true;
 
         self.showInterceptorModal(
           null,
@@ -988,9 +1128,20 @@
           function() {
             self.syncCookies();
             input._r2g_confirmed = true;
+            input._r2g_processing = false;
 
             const submitForm = function() {
               if (!form) return;
+
+              // Ensure html-upload hidden field is present so WordPress media-new.php processes the upload!
+              let htmlUploadInput = form.querySelector('input[name="html-upload"]');
+              if (!htmlUploadInput) {
+                htmlUploadInput = document.createElement('input');
+                htmlUploadInput.type = 'hidden';
+                htmlUploadInput.name = 'html-upload';
+                htmlUploadInput.value = 'Upload';
+                form.appendChild(htmlUploadInput);
+              }
 
               const fields = {
                 'r2g_format': self.format,
@@ -1016,7 +1167,7 @@
             };
 
             // If compressed in browser, replace input.files via DataTransfer
-            if (self.hasCompressedPreview && self.previewBlob && window.DataTransfer) {
+            if (self.hasCompressedPreview && self.previewBlob && self.engine === 'browser' && window.DataTransfer) {
               try {
                 const dt = new DataTransfer();
                 dt.items.add(self.previewBlob);
@@ -1031,7 +1182,7 @@
                   input.files = dt.files;
                 } catch (e) {}
                 submitForm();
-              });
+              }).catch(submitForm);
             } else {
               submitForm();
             }
@@ -1039,18 +1190,30 @@
           function() {
             input.value = '';
             input._r2g_confirmed = false;
+            input._r2g_processing = false;
           }
         );
       };
 
-      // File input change listener
+      // Native capture-phase listener for change on file inputs
+      document.addEventListener('change', function(e) {
+        const target = e.target;
+        if (target && target.tagName === 'INPUT' && target.type === 'file') {
+          if (target.id === 'async-upload' || target.name === 'async-upload' || target.form?.id === 'file-form') {
+            handleFileInput(target);
+          }
+        }
+      }, true);
+
+      // jQuery fallback for change
       $(document).on('change', '#async-upload, #file-form input[type="file"], input[type="file"][name="async-upload"]', function() {
         handleFileInput(this);
       });
 
-      // Submit listener
-      $(document).on('submit', '#file-form', function(e) {
-        const form = this;
+      // Intercept submit button click on browser upload form
+      $(document).on('click', '#html-upload, input[type="submit"][name="html-upload"]', function(e) {
+        const form = this.form || $(this).closest('form')[0];
+        if (!form) return;
         const fileInput = form.querySelector('input[type="file"]');
         if (fileInput && fileInput.files && fileInput.files.length > 0 && !fileInput._r2g_confirmed && self.config.interceptor !== 0) {
           const imageFiles = Array.from(fileInput.files).filter(function(f) {
@@ -1058,10 +1221,29 @@
           });
           if (imageFiles.length > 0) {
             e.preventDefault();
+            e.stopPropagation();
             handleFileInput(fileInput);
           }
         }
       });
+
+      // Submit listener fallback
+      document.addEventListener('submit', function(e) {
+        const form = e.target;
+        if (form && form.id === 'file-form') {
+          const fileInput = form.querySelector('input[type="file"]');
+          if (fileInput && fileInput.files && fileInput.files.length > 0 && !fileInput._r2g_confirmed && self.config.interceptor !== 0) {
+            const imageFiles = Array.from(fileInput.files).filter(function(f) {
+              return self.isImage(f);
+            });
+            if (imageFiles.length > 0) {
+              e.preventDefault();
+              e.stopPropagation();
+              handleFileInput(fileInput);
+            }
+          }
+        }
+      }, true);
     }
   };
 

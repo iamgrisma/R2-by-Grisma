@@ -4,7 +4,7 @@ Tags: r2, cloudflare, cloudflare r2, image optimization, webp, s3, offload media
 Requires at least: 5.8
 Tested up to: 6.7
 Requires PHP: 7.4
-Stable tag: 1.0.17
+Stable tag: 1.0.18
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -35,6 +35,14 @@ Enterprise Cloudflare R2 sync with upload-time format & compression controls, se
 4. Click **Test Connection & Verify CDN** to confirm connection.
 
 == Changelog ==
+
+= 1.0.18 =
+* Gutenberg Promise & Upload Fix: Wrapped `wp.mediaUtils.uploadMedia` in a standard Promise and preserved `_clientCompressed` state across async REST uploads, resolving post editor queue hangs.
+* Universal Gutenberg Drag-and-Drop: Actively synchronized with `core/block-editor` and `core/editor` stores and subscribed to lifecycle updates so dropped images on editor canvas and dropzones are reliably intercepted.
+* Browser Uploader Capture: Enabled capture-phase listeners and added hidden `html-upload` field injection on `media-new.php?browser-uploader=1` so single-file browser uploads trigger interceptor and submit cleanly.
+* True Multi-Engine Preview: Added `r2g_preview_compression` AJAX endpoint for real Server GD / Imagick and reSmush.it previews with base64 data URIs and exact server byte savings, keeping HTML5 Canvas for browser engine and raw display for lossless.
+* Live Bulk Sync Counter: Displayed exact live counts `Synced X / Y media items (Z remaining)` using `count_unsynced()` database index.
+* Defer Local File Deletion: When storage mode is set to R2 Only, deferred local disk cleanup to PHP `shutdown` hook so REST API responses never 500 or miss dimensions during upload.
 
 = 1.0.17 =
 * Added In-Browser "Compress Preview" Action: Generates instant client-side Canvas blobs in browser memory. Displays live image quality, exact byte sizes, and green percentage savings badge (-XX%).

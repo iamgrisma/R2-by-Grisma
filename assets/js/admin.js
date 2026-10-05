@@ -328,6 +328,7 @@
             const stats = res.data.stats || {};
             const total = stats.total_wp || 0;
             const synced = stats.synced || 0;
+            const remaining = (typeof res.data.remaining_count !== 'undefined') ? res.data.remaining_count : Math.max(0, total - synced);
             const pct = total > 0 ? Math.min(100, Math.round((synced / total) * 100)) : 100;
 
             // Update stats cards live
@@ -340,13 +341,13 @@
             }
 
             $progFill.css('width', pct + '%');
-            $progPct.text(pct + '%');
-            $progText.text('Synced ' + synced + ' of ' + total + ' media items...');
+            $progPct.text(pct + '% (' + synced + '/' + total + ')');
+            $progText.text('Synced ' + synced + ' / ' + total + ' media items (' + remaining + ' remaining)...');
 
             if (res.data.done || !res.data.remaining) {
               $progFill.css('width', '100%');
-              $progPct.text('100%');
-              $progText.text('All media successfully synced to Cloudflare R2! Local copies preserved safely.');
+              $progPct.text('100% (' + total + '/' + total + ')');
+              $progText.text('All media successfully synced to Cloudflare R2! (0 remaining). Local copies preserved safely.');
               $pauseBtn.hide();
               $cancelBtn.hide();
               $startBtn.show().text('Sync Finished (Run Again)');

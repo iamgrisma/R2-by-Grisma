@@ -614,7 +614,10 @@ class R2G_Media_Handler {
                 if (empty($metadata)) {
                     $metadata = wp_get_attachment_metadata($attachment_id);
                 }
-                self::delete_local_files($attachment_id, $file_path, $metadata);
+                // Defer local deletion to PHP shutdown hook so REST API (Gutenberg) and Plupload can finalize response without missing-file errors
+                add_action('shutdown', function() use ($attachment_id, $file_path, $metadata) {
+                    self::delete_local_files($attachment_id, $file_path, $metadata);
+                });
             }
         }
 

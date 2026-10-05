@@ -348,6 +348,22 @@ class R2G_Database {
     }
 
     /**
+     * Get count of attachments not yet synced to R2
+     *
+     * @return int
+     */
+    public static function count_unsynced() {
+        global $wpdb;
+        $table = self::table();
+
+        return (int) $wpdb->get_var(
+            "SELECT COUNT(p.ID) FROM {$wpdb->posts} p
+             LEFT JOIN {$table} r ON p.ID = r.attachment_id AND r.status = 'synced'
+             WHERE p.post_type = 'attachment' AND p.post_status != 'trash' AND r.id IS NULL"
+        );
+    }
+
+    /**
      * Get attachment IDs not yet synced to R2
      *
      * @param int $limit

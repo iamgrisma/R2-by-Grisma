@@ -40,6 +40,7 @@ class R2G_Admin {
         // Ajax Handlers
         add_action('wp_ajax_r2g_test_connection', array($this, 'ajax_test_connection'));
         add_action('wp_ajax_r2g_fetch_buckets', array($this, 'ajax_fetch_buckets'));
+        add_action('wp_ajax_r2g_preview_compression', array($this, 'ajax_preview_compression'));
     }
 
     /**
@@ -103,19 +104,11 @@ class R2G_Admin {
             'ajax_url' => admin_url('admin-ajax.php'),
         ));
 
-        // Enqueue Upload-Time Interceptor
-        $compress_deps = array('jquery');
-        if (wp_script_is('wp-media-utils', 'registered')) {
-            $compress_deps[] = 'wp-media-utils';
-        }
-        if (wp_script_is('wp-api-fetch', 'registered')) {
-            $compress_deps[] = 'wp-api-fetch';
-        }
-
+        // Enqueue Upload-Time Interceptor (depends only on jQuery to load universally across all admin screens)
         wp_enqueue_script(
             'r2g-browser-compress-js',
             R2G_URL . 'assets/js/browser-compress.js',
-            $compress_deps,
+            array('jquery'),
             R2G_VERSION,
             true
         );
@@ -128,6 +121,8 @@ class R2G_Admin {
             'compress'     => (int) get_option('r2g_compress_enabled', 1),
             'quality'      => (int) get_option('r2g_compress_quality', 82),
             'maxWidth'     => (int) get_option('r2g_max_width', 1920),
+            'ajax_url'     => admin_url('admin-ajax.php'),
+            'nonce'        => wp_create_nonce('r2g_admin_nonce'),
         ));
     }
 
@@ -270,6 +265,83 @@ class R2G_Admin {
         } else {
             wp_send_json_error($res);
         }
+    }
+
+    /**
+     * Ajax: Run server-side (GD/Imagick) or reSmush preview compression on an uploaded image
+     * Returns true base64 data URI + exact byte sizes and compression savings
+     */
+    public function ajax_preview_compression() {
+        check_ajax_referer('r2g_admin_nonce', 'nonce');
+        if (!current_user_can('upload_files')) {
+            wp_send_json_error(array('message' => esc_html__('Unauthorized.', 'r2-by-grisma')));
+        }
+
+        if (empty($_FILES['image']) || empty($_FILES['image']['tmp_name'])) {
+            wp_send_json_error(array('message' => esc_html__('No image file provided for preview.', 'r2-by-grisma')));
+        }
+
+        $format = sanitize_text_field($_POST['format'] ?? 'webp');
+        $quality = (int) ($_POST['quality'] ?? 82);
+        $max_width = (int) ($_POST['max_width'] ?? 1920);
+        $engine = sanitize_text_field($_POST['engine'] ?? 'server');
+
+        $tmp_file = $_FILES['image']['tmp_name'];
+        $orig_name = sanitize_file_name($_FILES['image']['name'] ?? 'image.jpg');
+        $orig_size = (int) ($_FILES['image']['size'] ?? 0);
+        if ($orig_size <= 0 && file_exists($tmp_file)) {
+            $orig_size = filesize($tmp_file);
+        }
+
+        // Create isolated temp working directory inside uploads
+        $upload_dir = wp_upload_dir();
+        $temp_dir = $upload_dir['basedir'] . '/r2g-temp';
+        if (!file_exists($temp_dir)) {
+            wp_mkdir_p($temp_dir);
+        }
+
+        $temp_path = $temp_dir . '/preview_' . wp_generate_password(12, false) . '_' . $orig_name;
+        if (!copy($tmp_file, $temp_path)) {
+            wp_send_json_error(array('message' => esc_html__('Could not initialize temporary file for preview.', 'r2-by-grisma')));
+        }
+
+        $opt_res = R2G_Optimizer::optimize_local_file($temp_path, array(
+            'format'            => $format,
+            'quality'           => $quality,
+            'max_width'         => $max_width,
+            'engine'            => $engine,
+            'compress'          => 1,
+            'client_compressed' => 0,
+        ));
+
+        $final_path = ($opt_res['success'] && !empty($opt_res['file_path'])) ? $opt_res['file_path'] : $temp_path;
+
+        if (!file_exists($final_path)) {
+            @unlink($temp_path);
+            wp_send_json_error(array('message' => esc_html__('Optimization preview failed.', 'r2-by-grisma')));
+        }
+
+        $comp_size = filesize($final_path);
+        $mime = !empty($opt_res['mime']) ? $opt_res['mime'] : 'image/' . ($format === 'jpg' ? 'jpeg' : $format);
+
+        $data = file_get_contents($final_path);
+        $base64 = 'data:' . $mime . ';base64,' . base64_encode($data);
+
+        // Cleanup temporary files immediately
+        @unlink($temp_path);
+        if ($final_path !== $temp_path && file_exists($final_path)) {
+            @unlink($final_path);
+        }
+
+        wp_send_json_success(array(
+            'data_url'    => $base64,
+            'orig_size'   => $orig_size,
+            'comp_size'   => $comp_size,
+            'bytes_saved' => max(0, $orig_size - $comp_size),
+            'mime'        => $mime,
+            'format'      => $format,
+            'engine'      => $engine,
+        ));
     }
 
     /**

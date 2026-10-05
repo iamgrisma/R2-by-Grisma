@@ -121,17 +121,17 @@ class R2G_Sync {
             }
         }
 
-        // Check how many are still remaining
-        $remaining_ids = R2G_Database::get_unsynced_ids(1);
-        $remaining = !empty($remaining_ids);
+        // Check exact remaining count
+        $remaining_count = R2G_Database::count_unsynced();
 
         wp_send_json_success(array(
-            'synced_count' => $synced,
-            'failed_count' => $failed,
-            'remaining'    => $remaining ? true : false,
-            'done'         => !$remaining,
-            'results'      => $results,
-            'stats'        => R2G_Database::get_stats(),
+            'synced_count'    => $synced,
+            'failed_count'    => $failed,
+            'remaining_count' => $remaining_count,
+            'remaining'       => $remaining_count > 0,
+            'done'            => $remaining_count === 0,
+            'results'         => $results,
+            'stats'           => R2G_Database::get_stats(),
         ));
     }
 
