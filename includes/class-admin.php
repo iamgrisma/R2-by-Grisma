@@ -99,11 +99,11 @@ class R2G_Admin {
                 true
             );
 
-            $engine = get_option('r2g_compress_engine', 'browser');
+            $engine = get_option('r2g_compress_engine', 'server');
             $format = get_option('r2g_compress_format', 'webp');
             $quality = ((int)get_option('r2g_compress_quality', 82)) / 100;
             $max_width = (int)get_option('r2g_max_width', 1920);
-            $prompt = (bool)get_option('r2g_prompt_confirm', true);
+            $prompt = (bool)get_option('r2g_prompt_confirm', false);
 
             wp_localize_script('r2g-browser-compress-js', 'r2g_compress_config', array(
                 'enabled'       => ($engine === 'browser' && $format !== 'none'),
@@ -548,12 +548,12 @@ class R2G_Admin {
                                 <td>
                                     <div class="r2g-radio-group">
                                         <label class="r2g-radio-pill">
-                                            <input type="radio" name="r2g_compress_engine" value="browser" <?php checked($engine, 'browser'); ?> />
-                                            <span><?php esc_html_e('Browser Edge (Client-Side)', 'r2-by-grisma'); ?></span>
+                                            <input type="radio" name="r2g_compress_engine" value="server" <?php checked($engine, 'server'); ?> />
+                                            <span><strong><?php esc_html_e('Server / API Pipeline (Recommended)', 'r2-by-grisma'); ?></strong></span>
                                         </label>
                                         <label class="r2g-radio-pill">
-                                            <input type="radio" name="r2g_compress_engine" value="server" <?php checked($engine, 'server'); ?> />
-                                            <span><?php esc_html_e('Local Server (GD / Imagick)', 'r2-by-grisma'); ?></span>
+                                            <input type="radio" name="r2g_compress_engine" value="browser" <?php checked($engine, 'browser'); ?> />
+                                            <span><?php esc_html_e('Browser Edge (Client-Side Canvas)', 'r2-by-grisma'); ?></span>
                                         </label>
                                         <label class="r2g-radio-pill">
                                             <input type="radio" name="r2g_compress_engine" value="resmush_async" <?php checked($engine, 'resmush_async'); ?> />
@@ -564,7 +564,7 @@ class R2G_Admin {
                                             <span><?php esc_html_e('Disabled', 'r2-by-grisma'); ?></span>
                                         </label>
                                     </div>
-                                    <p class="description"><?php esc_html_e('Browser Edge compresses on your PC before uploading, saving upload bandwidth and server CPU.', 'r2-by-grisma'); ?></p>
+                                    <p class="description"><?php esc_html_e('Server / API Pipeline: 100% automated and seamless. Uploads never freeze or block your editor. Images are automatically converted to WebP on upload and synced to R2.', 'r2-by-grisma'); ?></p>
                                 </td>
                             </tr>
                             <tr>
@@ -596,8 +596,9 @@ class R2G_Admin {
                                 <td>
                                     <label>
                                         <input type="checkbox" name="r2g_prompt_confirm" value="1" <?php checked($prompt, true); ?> />
-                                        <?php esc_html_e('Prompt confirmation modal during upload allowing per-image format/quality tuning', 'r2-by-grisma'); ?>
+                                        <?php esc_html_e('Prompt confirmation modal during upload (Browser Edge only)', 'r2-by-grisma'); ?>
                                     </label>
+                                    <p class="description"><?php esc_html_e('When using Server / API Pipeline, uploads are completely automatic with zero blocking prompts.', 'r2-by-grisma'); ?></p>
                                 </td>
                             </tr>
                         </table>

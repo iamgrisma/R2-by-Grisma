@@ -3,7 +3,7 @@
  * Plugin Name: R2 by Grisma
  * Plugin URI: https://grisma.com.np
  * Description: Enterprise Cloudflare R2 sync with client-side Browser Edge compression, on-site WebP conversion, custom CDN delivery, and zero vendor bloat.
- * Version: 1.0.6
+ * Version: 1.0.7
  * Author: Grisma
  * Author URI: https://grisma.com.np
  * License: GPL v2 or later
@@ -19,7 +19,7 @@ if (!defined('ABSPATH')) {
 }
 
 // Define Constants
-define('R2G_VERSION', '1.0.6');
+define('R2G_VERSION', '1.0.7');
 define('R2G_FILE', __FILE__);
 define('R2G_PATH', plugin_dir_path(__FILE__));
 define('R2G_URL', plugin_dir_url(__FILE__));
@@ -65,6 +65,9 @@ class R2_By_Grisma {
         // Auto-migrate postmeta data from v1.0.0 on first admin load after upgrade
         add_action('admin_init', array($this, 'maybe_migrate_postmeta'));
 
+        // Auto-migrate to Server / API pipeline so browser uploads never freeze or get stuck
+        add_action('admin_init', array($this, 'maybe_migrate_engine_v107'));
+
         // Initialize sub-modules
         R2G_Media_Handler::instance();
         R2G_URL_Rewriter::instance();
@@ -75,6 +78,19 @@ class R2_By_Grisma {
 
         // Settings link in Plugins list
         add_filter('plugin_action_links_' . plugin_basename(__FILE__), array($this, 'add_plugin_action_links'));
+    }
+
+    /**
+     * Switch default engine to server and disable blocking prompts so uploads are seamless and automatic
+     */
+    public function maybe_migrate_engine_v107() {
+        if (!get_option('r2g_v107_migrated')) {
+            if (get_option('r2g_compress_engine') === 'browser') {
+                update_option('r2g_compress_engine', 'server');
+                update_option('r2g_prompt_confirm', 0);
+            }
+            update_option('r2g_v107_migrated', 1);
+        }
     }
 
     /**
@@ -145,7 +161,7 @@ register_activation_hook(__FILE__, function() {
         add_option('r2g_storage_mode', 'both');
     }
     if (!get_option('r2g_compress_engine')) {
-        add_option('r2g_compress_engine', 'browser');
+        add_option('r2g_compress_engine', 'server');
     }
     if (!get_option('r2g_compress_format')) {
         add_option('r2g_compress_format', 'webp');

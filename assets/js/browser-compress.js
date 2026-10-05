@@ -295,10 +295,26 @@
      * Compress a single image file via HTML5 Canvas
      */
     compressSingleImage: function(file, format, quality, maxWidth, callback) {
-      const reader = new FileReader();
-      reader.onload = function(e) {
+      let done = false;
+      const finish = function(blob, name) {
+        if (done) return;
+        done = true;
+        callback(blob, name);
+      };
+
+      // 6-second timeout failsafe: if canvas hangs or takes too long, never block upload
+      setTimeout(function() {
+        finish(null, file.name);
+      }, 6000);
+
+      try {
+        const objectUrl = URL.createObjectURL(file);
         const img = new Image();
         img.onload = function() {
+          try {
+            URL.revokeObjectURL(objectUrl);
+          } catch (e) {}
+
           let width = img.width;
           let height = img.height;
 
@@ -325,7 +341,7 @@
 
           canvas.toBlob(function(blob) {
             if (!blob) {
-              callback(null, file.name);
+              finish(null, file.name);
               return;
             }
 
@@ -333,14 +349,21 @@
             const cleanBase = baseName.replace(/-scaled$/i, '');
             const finalName = format === 'webp' ? cleanBase + '.webp' : file.name;
 
-            callback(blob, finalName);
+            finish(blob, finalName);
           }, mime, quality);
         };
-        img.onerror = () => callback(null, file.name);
-        img.src = e.target.result;
-      };
-      reader.onerror = () => callback(null, file.name);
-      reader.readAsDataURL(file);
+
+        img.onerror = function() {
+          try {
+            URL.revokeObjectURL(objectUrl);
+          } catch (e) {}
+          finish(null, file.name);
+        };
+
+        img.src = objectUrl;
+      } catch (err) {
+        finish(null, file.name);
+      }
     },
 
     /**
