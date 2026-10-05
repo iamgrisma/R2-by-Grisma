@@ -3,7 +3,7 @@
  * Plugin Name: R2 by Grisma
  * Plugin URI: https://grisma.com.np
  * Description: Enterprise Cloudflare R2 sync with client-side Browser Edge compression, on-site WebP conversion, custom CDN delivery, and zero vendor bloat.
- * Version: 1.0.0
+ * Version: 1.0.1
  * Author: Grisma
  * Author URI: https://grisma.com.np
  * License: GPL v2 or later
@@ -19,18 +19,20 @@ if (!defined('ABSPATH')) {
 }
 
 // Define Constants
-define('R2G_VERSION', '1.0.0');
+define('R2G_VERSION', '1.0.1');
 define('R2G_FILE', __FILE__);
 define('R2G_PATH', plugin_dir_path(__FILE__));
 define('R2G_URL', plugin_dir_url(__FILE__));
 
 // Load Modules
 require_once R2G_PATH . 'includes/class-encryption.php';
+require_once R2G_PATH . 'includes/class-database.php';
 require_once R2G_PATH . 'includes/class-r2-client.php';
 require_once R2G_PATH . 'includes/class-optimizer.php';
 require_once R2G_PATH . 'includes/class-media-handler.php';
 require_once R2G_PATH . 'includes/class-url-rewriter.php';
 require_once R2G_PATH . 'includes/class-media-library.php';
+require_once R2G_PATH . 'includes/class-sync.php';
 require_once R2G_PATH . 'includes/class-admin.php';
 require_once R2G_PATH . 'includes/class-updater.php';
 
@@ -57,10 +59,17 @@ class R2_By_Grisma {
     }
 
     public function __construct() {
+        // Ensure database table exists (handles upgrades)
+        add_action('admin_init', array('R2G_Database', 'maybe_upgrade'));
+
+        // Auto-migrate postmeta data from v1.0.0 on first admin load after upgrade
+        add_action('admin_init', array($this, 'maybe_migrate_postmeta'));
+
         // Initialize sub-modules
         R2G_Media_Handler::instance();
         R2G_URL_Rewriter::instance();
         R2G_Media_Library::instance();
+        R2G_Sync::instance();
         R2G_Admin::instance();
         R2G_Updater::instance();
 
@@ -84,6 +93,16 @@ class R2_By_Grisma {
             $this->client = new R2G_Client($account_id, $access_key, $secret_key, $bucket);
         }
         return $this->client;
+    }
+
+    /**
+     * One-time migration of v1.0.0 postmeta sync data into the database table
+     */
+    public function maybe_migrate_postmeta() {
+        if (get_option('r2g_postmeta_migrated')) {
+            return;
+        }
+        R2G_Database::migrate_from_postmeta();
     }
 
     /**
@@ -115,8 +134,10 @@ function r2_by_grisma() {
 // Bootstrap
 r2_by_grisma();
 
-// Activation defaults
+// Activation: Create database table and set defaults
 register_activation_hook(__FILE__, function() {
+    R2G_Database::create_table();
+
     if (!get_option('r2g_storage_mode')) {
         add_option('r2g_storage_mode', 'both');
     }
@@ -132,7 +153,13 @@ register_activation_hook(__FILE__, function() {
     if (!get_option('r2g_max_width')) {
         add_option('r2g_max_width', 1920);
     }
-    if (get_option('r2g_prompt_confirm') === false) {
-        add_option('r2g_prompt_confirm', 1);
+    if (get_option('r2g_auto_upload') === false) {
+        add_option('r2g_auto_upload', 1);
+    }
+    if (get_option('r2g_rewrite_urls') === false) {
+        add_option('r2g_rewrite_urls', 1);
+    }
+    if (get_option('r2g_delete_from_r2') === false) {
+        add_option('r2g_delete_from_r2', 1);
     }
 });

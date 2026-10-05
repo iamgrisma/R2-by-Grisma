@@ -3,6 +3,7 @@
  * Media Attachment Lifecycle Handler
  * Intercepts uploads, applies compression pipeline, uploads to R2,
  * cleans local files if configured, and handles R2 deletion on attachment trash.
+ * Gives user complete control over automated vs manual actions.
  *
  * @package R2_By_Grisma
  */
@@ -70,9 +71,14 @@ class R2G_Media_Handler {
      * @return array
      */
     public function on_generate_metadata($metadata, $attachment_id) {
+        // Check if user enabled automatic upload (Default: 1, user can disable for manual control)
+        $auto_upload = (int) get_option('r2g_auto_upload', 1);
+
         if (!wp_attachment_is_image($attachment_id)) {
-            // Upload non-image files directly to R2 if enabled
-            self::sync_attachment_to_r2($attachment_id);
+            // Upload non-image files directly to R2 if auto-upload is on
+            if ($auto_upload) {
+                self::sync_attachment_to_r2($attachment_id);
+            }
             return $metadata;
         }
 
@@ -116,8 +122,10 @@ class R2G_Media_Handler {
             }
         }
 
-        // 2. Upload to Cloudflare R2
-        self::sync_attachment_to_r2($attachment_id);
+        // 2. Upload to Cloudflare R2 if auto-upload is enabled
+        if ($auto_upload) {
+            self::sync_attachment_to_r2($attachment_id);
+        }
 
         // 3. If async reSmush is enabled, enqueue background optimization job
         if ($engine === 'resmush_async') {
@@ -142,18 +150,26 @@ class R2G_Media_Handler {
 
         $file_path = get_attached_file($attachment_id);
         if (!$file_path || !file_exists($file_path)) {
+            // Local file doesn't exist. Check if it's already on R2!
+            $record = R2G_Database::get($attachment_id);
+            if ($record && $record->status === 'synced') {
+                return true;
+            }
             return false;
         }
 
         $main_r2_key = self::get_r2_key_from_path($file_path);
+        $original_size = file_exists($file_path) ? filesize($file_path) : 0;
 
         // Upload main file
         $put_main = $client->put_object($file_path, $main_r2_key);
         if (!$put_main['success']) {
+            R2G_Database::mark_failed($attachment_id);
             return false;
         }
 
         $uploaded_keys = array($main_r2_key);
+        $thumb_count = 0;
 
         // Upload thumbnail sizes
         $metadata = wp_get_attachment_metadata($attachment_id);
@@ -167,16 +183,23 @@ class R2G_Media_Handler {
                     $put_thumb = $client->put_object($thumb_path, $thumb_r2_key, $size_info['mime-type'] ?? null);
                     if ($put_thumb['success']) {
                         $uploaded_keys[] = $thumb_r2_key;
+                        $thumb_count++;
                     }
                 }
             }
         }
+
+        $compressed_size = file_exists($file_path) ? filesize($file_path) : $original_size;
 
         // Record sync status in postmeta
         update_post_meta($attachment_id, '_r2g_synced', 1);
         update_post_meta($attachment_id, '_r2g_key', $main_r2_key);
         update_post_meta($attachment_id, '_r2g_keys', $uploaded_keys);
         update_post_meta($attachment_id, '_r2g_synced_at', current_time('mysql'));
+        delete_post_meta($attachment_id, '_r2g_local_deleted');
+
+        // Record in database index
+        R2G_Database::mark_synced($attachment_id, $main_r2_key, $compressed_size, $original_size, $thumb_count);
 
         // Handle "R2 Only" storage mode: remove local copies to save disk space
         $storage_mode = get_option('r2g_storage_mode', 'both');
@@ -193,6 +216,7 @@ class R2G_Media_Handler {
      * @param int $attachment_id
      * @param string $file_path
      * @param array $metadata
+     * @return bool
      */
     public static function delete_local_files($attachment_id, $file_path = null, $metadata = null) {
         if (!$file_path) {
@@ -217,6 +241,10 @@ class R2G_Media_Handler {
         }
 
         update_post_meta($attachment_id, '_r2g_local_deleted', 1);
+
+        // Update database index
+        R2G_Database::set_has_local($attachment_id, false);
+        return true;
     }
 
     /**
@@ -253,7 +281,7 @@ class R2G_Media_Handler {
             }
             file_put_contents($file_path, $body);
 
-            // Download thumbnails
+            // Download thumbnails if available
             if (!empty($metadata['sizes']) && is_array($metadata['sizes'])) {
                 foreach ($metadata['sizes'] as $size_info) {
                     $thumb_path = $dir . '/' . $size_info['file'];
@@ -267,6 +295,7 @@ class R2G_Media_Handler {
             }
 
             delete_post_meta($attachment_id, '_r2g_local_deleted');
+            R2G_Database::set_has_local($attachment_id, true);
             return true;
         }
 
@@ -274,24 +303,72 @@ class R2G_Media_Handler {
     }
 
     /**
-     * Purge attachment and thumbnails from Cloudflare R2 on deletion
+     * Delete an attachment and all its thumbnails from Cloudflare R2 bucket
+     * Keeps the local file intact if it exists.
      *
      * @param int $attachment_id
+     * @return bool
      */
-    public function on_delete_attachment($attachment_id) {
+    public static function delete_from_r2($attachment_id) {
         $client = r2_by_grisma()->get_client();
         if (!$client || !$client->is_configured()) {
-            return;
+            return false;
         }
 
         $keys = get_post_meta($attachment_id, '_r2g_keys', true);
         if (empty($keys) || !is_array($keys)) {
             $main_key = get_post_meta($attachment_id, '_r2g_key', true);
+            if (empty($main_key)) {
+                $file_path = get_attached_file($attachment_id);
+                $main_key = self::get_r2_key_from_path($file_path);
+            }
             $keys = $main_key ? array($main_key) : array();
         }
 
+        // Delete each key from R2
         foreach ($keys as $k) {
             $client->delete_object($k);
         }
+
+        // Remove R2 postmeta
+        delete_post_meta($attachment_id, '_r2g_synced');
+        delete_post_meta($attachment_id, '_r2g_key');
+        delete_post_meta($attachment_id, '_r2g_keys');
+        delete_post_meta($attachment_id, '_r2g_synced_at');
+
+        // Check if local file still exists
+        $file_path = get_attached_file($attachment_id);
+        $has_local = !empty($file_path) && file_exists($file_path);
+
+        if ($has_local) {
+            // Revert status to pending/local in database
+            R2G_Database::upsert($attachment_id, array(
+                'status'    => 'pending',
+                'has_local' => 1,
+                'r2_key'    => '',
+            ));
+        } else {
+            // No local copy and deleted from R2
+            R2G_Database::mark_deleted($attachment_id);
+        }
+
+        return true;
+    }
+
+    /**
+     * Purge attachment and thumbnails from Cloudflare R2 when deleted from WordPress
+     *
+     * @param int $attachment_id
+     */
+    public function on_delete_attachment($attachment_id) {
+        // Check if delete from R2 is enabled (Default: 1)
+        $delete_from_r2 = (int) get_option('r2g_delete_from_r2', 1);
+
+        if ($delete_from_r2) {
+            self::delete_from_r2($attachment_id);
+        }
+
+        // Remove from database index
+        R2G_Database::remove($attachment_id);
     }
 }

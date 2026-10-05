@@ -2,7 +2,7 @@
 /**
  * Universal URL & Srcset Rewriter
  * Seamlessly replaces local WordPress upload URLs with Cloudflare R2 Custom CDN Domain.
- * Works identically for Headless REST API (Astro) and Monolithic themes alike.
+ * Ensures image preview URLs and thumbnails in WordPress Admin and Frontend load from CDN.
  *
  * @package R2_By_Grisma
  */
@@ -31,19 +31,31 @@ class R2G_URL_Rewriter {
             return;
         }
 
-        // Core attachment URL filter
+        // 1. Core attachment URL filter
         add_filter('wp_get_attachment_url', array($this, 'filter_attachment_url'), 20, 2);
 
-        // Responsive srcset filter
-        add_filter('wp_calculate_image_srcset', array($this, 'filter_srcset'), 20, 5);
-
-        // Downsized image filter
+        // 2. Downsized image / thumbnail generation filter
         add_filter('image_downsize', array($this, 'filter_image_downsize'), 20, 3);
 
-        // Headless REST API attachment preparation
+        // 3. Image src array filter (fallback for wp_get_attachment_image_src)
+        add_filter('wp_get_attachment_image_src', array($this, 'filter_attachment_image_src'), 20, 4);
+
+        // 4. Thumb URL filter
+        add_filter('wp_get_attachment_thumb_url', array($this, 'filter_thumb_url'), 20, 2);
+
+        // 5. Responsive srcset filter
+        add_filter('wp_calculate_image_srcset', array($this, 'filter_srcset'), 20, 5);
+
+        // 6. Media Library Grid view, Edit modal, and Gutenberg attachment preparation
+        add_filter('wp_prepare_attachment_for_js', array($this, 'filter_attachment_for_js'), 20, 3);
+
+        // 7. Headless REST API attachment preparation
         add_filter('rest_prepare_attachment', array($this, 'filter_rest_attachment'), 20, 3);
 
-        // Traditional frontend theme post content rewriter
+        // 8. Admin Post Thumbnail preview (Featured Image metabox)
+        add_filter('admin_post_thumbnail_html', array($this, 'filter_admin_thumbnail_html'), 20, 3);
+
+        // 9. Traditional frontend theme post content rewriter
         if (!is_admin()) {
             add_filter('the_content', array($this, 'filter_content_urls'), 20);
         }
@@ -57,6 +69,56 @@ class R2G_URL_Rewriter {
     public function get_cdn_base() {
         $domain = get_option('r2g_custom_domain', '');
         return rtrim($domain, '/');
+    }
+
+    /**
+     * Determine if an attachment should be served from Cloudflare R2 CDN
+     * Multi-layer check: postmeta, database index, missing local file, or legacy offload plugins.
+     *
+     * @param int $post_id
+     * @return bool
+     */
+    public function should_rewrite_attachment($post_id) {
+        $cdn_base = $this->get_cdn_base();
+        if (empty($cdn_base)) {
+            return false;
+        }
+
+        // Global rewrite toggle (default: true)
+        if (get_option('r2g_rewrite_urls', 1) == 0) {
+            return false;
+        }
+
+        // 1. Native R2 by Grisma postmeta
+        if ((bool) get_post_meta($post_id, '_r2g_synced', true)) {
+            return true;
+        }
+
+        // 2. Custom Database Index table
+        if (class_exists('R2G_Database')) {
+            $record = R2G_Database::get($post_id);
+            if ($record && $record->status === 'synced') {
+                return true;
+            }
+        }
+
+        // 3. Local file missing on server disk (Must be served from CDN!)
+        $file_path = get_attached_file($post_id);
+        if (!empty($file_path) && !file_exists($file_path)) {
+            return true;
+        }
+
+        // 4. Legacy cloud sync plugins (e.g. Media Cloud Sync, WP Offload Media)
+        if (
+            get_post_meta($post_id, '_mcs_synced', true) ||
+            get_post_meta($post_id, '_media_cloud_sync_synced', true) ||
+            get_post_meta($post_id, '_cloud_url', true) ||
+            get_post_meta($post_id, '_amazonS3_info', true)
+        ) {
+            return true;
+        }
+
+        return false;
     }
 
     /**
@@ -106,8 +168,87 @@ class R2G_URL_Rewriter {
      * @return string
      */
     public function filter_attachment_url($url, $post_id) {
-        $is_synced = get_post_meta($post_id, '_r2g_synced', true);
-        if ($is_synced) {
+        if ($this->should_rewrite_attachment($post_id)) {
+            return $this->rewrite_url($url);
+        }
+        return $url;
+    }
+
+    /**
+     * Filter image downsize (Core hook for all thumbnails and responsive image tags)
+     * Intercepts and returns CDN URL with proper dimensions so admin preview never breaks.
+     *
+     * @param bool|array $downsize
+     * @param int $id
+     * @param string|array $size
+     * @return bool|array
+     */
+    public function filter_image_downsize($downsize, $id, $size) {
+        if (!$this->should_rewrite_attachment($id)) {
+            return $downsize;
+        }
+
+        // If another filter already produced an array, rewrite its URL to CDN
+        if (is_array($downsize) && !empty($downsize[0])) {
+            $downsize[0] = $this->rewrite_url($downsize[0]);
+            return $downsize;
+        }
+
+        // WordPress core passed false — compute downsized CDN URL directly
+        $img_url = wp_get_attachment_url($id);
+        if (empty($img_url)) {
+            return $downsize;
+        }
+
+        $meta = wp_get_attachment_metadata($id);
+        $width = 0;
+        $height = 0;
+        $is_intermediate = false;
+
+        if (is_string($size) && !empty($meta['sizes'][$size])) {
+            $data = $meta['sizes'][$size];
+            $img_url = path_join(dirname($img_url), $data['file']);
+            $width = $data['width'] ?? 0;
+            $height = $data['height'] ?? 0;
+            $is_intermediate = true;
+        } elseif (is_array($size)) {
+            $width = $size[0] ?? 0;
+            $height = $size[1] ?? 0;
+            $is_intermediate = true;
+        } else {
+            $width = $meta['width'] ?? 0;
+            $height = $meta['height'] ?? 0;
+        }
+
+        $cdn_url = $this->rewrite_url($img_url);
+        return array($cdn_url, $width, $height, $is_intermediate);
+    }
+
+    /**
+     * Filter wp_get_attachment_image_src output
+     *
+     * @param array|false $image
+     * @param int $attachment_id
+     * @param string|int[] $size
+     * @param bool $icon
+     * @return array|false
+     */
+    public function filter_attachment_image_src($image, $attachment_id, $size, $icon) {
+        if (is_array($image) && !empty($image[0]) && $this->should_rewrite_attachment($attachment_id)) {
+            $image[0] = $this->rewrite_url($image[0]);
+        }
+        return $image;
+    }
+
+    /**
+     * Filter wp_get_attachment_thumb_url
+     *
+     * @param string $url
+     * @param int $post_id
+     * @return string
+     */
+    public function filter_thumb_url($url, $post_id) {
+        if ($this->should_rewrite_attachment($post_id)) {
             return $this->rewrite_url($url);
         }
         return $url;
@@ -124,7 +265,7 @@ class R2G_URL_Rewriter {
      * @return array
      */
     public function filter_srcset($sources, $size_array, $image_src, $image_meta, $attachment_id) {
-        if (empty($sources) || !is_array($sources)) {
+        if (empty($sources) || !is_array($sources) || !$this->should_rewrite_attachment($attachment_id)) {
             return $sources;
         }
 
@@ -138,18 +279,35 @@ class R2G_URL_Rewriter {
     }
 
     /**
-     * Filter image downsize
+     * Filter WordPress attachment payload for JS (Media Library Grid view, modal, Gutenberg)
      *
-     * @param bool|array $downsize
-     * @param int $id
-     * @param string|array $size
-     * @return bool|array
+     * @param array $response
+     * @param WP_Post $attachment
+     * @param array|bool $meta
+     * @return array
      */
-    public function filter_image_downsize($downsize, $id, $size) {
-        if (is_array($downsize) && !empty($downsize[0])) {
-            $downsize[0] = $this->rewrite_url($downsize[0]);
+    public function filter_attachment_for_js($response, $attachment, $meta) {
+        if (!$this->should_rewrite_attachment($attachment->ID)) {
+            return $response;
         }
-        return $downsize;
+
+        if (!empty($response['url'])) {
+            $response['url'] = $this->rewrite_url($response['url']);
+        }
+
+        if (!empty($response['icon'])) {
+            $response['icon'] = $this->rewrite_url($response['icon']);
+        }
+
+        if (!empty($response['sizes']) && is_array($response['sizes'])) {
+            foreach ($response['sizes'] as &$s) {
+                if (!empty($s['url'])) {
+                    $s['url'] = $this->rewrite_url($s['url']);
+                }
+            }
+        }
+
+        return $response;
     }
 
     /**
@@ -177,6 +335,30 @@ class R2G_URL_Rewriter {
 
         $response->set_data($data);
         return $response;
+    }
+
+    /**
+     * Filter Admin Featured Image HTML
+     *
+     * @param string $content
+     * @param int $post_id
+     * @param int $thumbnail_id
+     * @return string
+     */
+    public function filter_admin_thumbnail_html($content, $post_id, $thumbnail_id) {
+        if (empty($content) || !$thumbnail_id || !$this->should_rewrite_attachment($thumbnail_id)) {
+            return $content;
+        }
+
+        $uploads = wp_upload_dir();
+        $baseurl = $uploads['baseurl'];
+        $cdn_base = $this->get_cdn_base();
+
+        if (empty($cdn_base) || empty($baseurl)) {
+            return $content;
+        }
+
+        return str_replace($baseurl, $cdn_base . '/wp-content/uploads', $content);
     }
 
     /**
