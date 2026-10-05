@@ -1,6 +1,6 @@
 /**
  * R2 by Grisma — Admin JS
- * Handles Test Connection, Copy CDN URL, Media Actions, Bulk Sync Engine, and Thumbnail Auto-healing.
+ * Handles Live Bucket Discovery, Pre-Save Live Connection Test, Media Actions, Bulk Sync, and Import.
  */
 (function($) {
   'use strict';
@@ -9,13 +9,127 @@
     const nonce = window.r2g_admin?.nonce || '';
     const ajaxurl = window.r2g_admin?.ajax_url || window.ajaxurl || '/wp-admin/admin-ajax.php';
 
-    // 1. Test Connection
+    // Helper: Get active secret key (typed or empty if unchanged)
+    function getSecretKeyVal() {
+      if ($('#r2g_secret_key').is(':visible')) {
+        return $('#r2g_secret_key').val() || '';
+      }
+      return '';
+    }
+
+    // Helper: Get active bucket name (select or input)
+    function getBucketVal() {
+      if ($('#r2g_bucket_select').is(':visible') && $('#r2g_bucket_select').val()) {
+        return $('#r2g_bucket_select').val();
+      }
+      return $('#r2g_bucket').val() || '';
+    }
+
+    // 1. Live Bucket Discovery
+    $('#r2g-btn-fetch-buckets').on('click', function(e) {
+      e.preventDefault();
+      const $btn = $(this);
+      const $status = $('#r2g-fetch-status');
+      const accountId = $('#r2g_account_id').val()?.trim();
+      const accessKey = $('#r2g_access_key').val()?.trim();
+      const secretKey = getSecretKeyVal();
+
+      if (!accountId || !accessKey) {
+        $status.css('color', '#dc2626').text('Please enter Account ID and Access Key ID first.');
+        return;
+      }
+
+      $btn.prop('disabled', true).text('Discovering...');
+      $status.css('color', '#64748b').text('Connecting to Cloudflare R2 S3 API...');
+
+      $.ajax({
+        url: ajaxurl,
+        type: 'POST',
+        dataType: 'json',
+        data: {
+          action: 'r2g_fetch_buckets',
+          account_id: accountId,
+          access_key: accessKey,
+          secret_key: secretKey,
+          nonce: nonce,
+        },
+        success: function(res) {
+          if (res.success && res.data?.buckets && res.data.buckets.length > 0) {
+            const buckets = res.data.buckets;
+            const $select = $('#r2g_bucket_select');
+            const currentBucket = $('#r2g_bucket').val()?.trim();
+
+            $select.empty().append('<option value="">-- Select Discovered Bucket --</option>');
+            let matched = false;
+
+            buckets.forEach(function(b) {
+              const selected = (b === currentBucket) ? 'selected' : '';
+              if (b === currentBucket) matched = true;
+              $select.append('<option value="' + b + '" ' + selected + '>' + b + '</option>');
+            });
+
+            if (!matched && buckets.length === 1) {
+              $select.val(buckets[0]);
+              $('#r2g_bucket').val(buckets[0]);
+            }
+
+            $('#r2g_bucket').hide();
+            $select.show();
+
+            // Auto-suggest custom domain if empty
+            const chosen = $select.val() || buckets[0];
+            const currentDomain = $('#r2g_custom_domain').val()?.trim();
+            if (!currentDomain && chosen === 'topnepali') {
+              $('#r2g_custom_domain').val('https://objects.topnepali.com');
+              $('#r2g-domain-hint').html('<strong>Auto-suggested:</strong> https://objects.topnepali.com (Connected to bucket ' + chosen + ')');
+            }
+
+            $status.css('color', '#059669').html('<strong>✓ ' + res.data.message + '</strong> (Selected: <code>' + (chosen || 'none') + '</code>)');
+          } else {
+            $status.css('color', '#dc2626').html(res.data?.message || res.data?.error || 'Could not discover buckets. Verify credentials or enter bucket name manually.');
+          }
+        },
+        error: function(xhr, status, error) {
+          $status.css('color', '#dc2626').text('Discovery failed: ' + error);
+        },
+        complete: function() {
+          $btn.prop('disabled', false).text('Discover Buckets');
+        }
+      });
+    });
+
+    // Bucket select change sync
+    $('#r2g_bucket_select').on('change', function() {
+      const val = $(this).val();
+      $('#r2g_bucket').val(val);
+      const currentDomain = $('#r2g_custom_domain').val()?.trim();
+      if (!currentDomain && val === 'topnepali') {
+        $('#r2g_custom_domain').val('https://objects.topnepali.com');
+      }
+    });
+
+    // 2. Pre-Save Live Test Connection
     $('#r2g-btn-test-connection').on('click', function(e) {
       e.preventDefault();
       const $btn = $(this);
       const $status = $('#r2g-test-status');
 
-      $btn.prop('disabled', true).text('Testing connection...');
+      const accountId = $('#r2g_account_id').val()?.trim();
+      const accessKey = $('#r2g_access_key').val()?.trim();
+      const secretKey = getSecretKeyVal();
+      const bucket = getBucketVal();
+      const customDomain = $('#r2g_custom_domain').val()?.trim();
+
+      if (!accountId || !accessKey) {
+        $status.show().addClass('r2g-test-err').html('<strong>Missing:</strong> Please enter Account ID and Access Key ID.');
+        return;
+      }
+      if (!bucket) {
+        $status.show().addClass('r2g-test-err').html('<strong>Missing:</strong> Please select or enter an R2 Bucket name.');
+        return;
+      }
+
+      $btn.prop('disabled', true).text('Testing connection (live)...');
       $status.hide().removeClass('r2g-test-ok r2g-test-err').empty();
 
       $.ajax({
@@ -24,6 +138,11 @@
         dataType: 'json',
         data: {
           action: 'r2g_test_connection',
+          account_id: accountId,
+          access_key: accessKey,
+          secret_key: secretKey,
+          bucket: bucket,
+          custom_domain: customDomain,
           nonce: nonce,
         },
         success: function(response) {
@@ -38,19 +157,19 @@
           $status.show().addClass('r2g-test-err').html('<strong>Error:</strong> Request failed: ' + error);
         },
         complete: function() {
-          $btn.prop('disabled', false).text('Test Connection & Verify CDN');
+          $btn.prop('disabled', false).text('Test Connection & Verify CDN (Live)');
         }
       });
     });
 
-    // 2. Secret Key Masking / Editing
+    // 3. Secret Key Masking / Editing
     $('#r2g-btn-change-secret').on('click', function(e) {
       e.preventDefault();
       $('#r2g-secret-display').hide();
       $('#r2g-secret-input-wrap').show().find('input').focus();
     });
 
-    // 3. Media Actions (Push, Restore, Delete Local, Delete from R2)
+    // 4. Media Actions (Push, Restore, Delete Local, Delete from R2)
     $(document).on('click', '.r2g-row-action', function(e) {
       e.preventDefault();
       const $btn = $(this);
@@ -89,7 +208,7 @@
       });
     });
 
-    // 4. One-Click Copy CDN URL
+    // 5. One-Click Copy CDN URL
     $(document).on('click', '.r2g-btn-copy-cdn, .r2g-link-copy-cdn', function(e) {
       e.preventDefault();
       const $el = $(this);
@@ -114,12 +233,14 @@
       }
     });
 
-    // 5. Bulk Sync Engine
+    // 6. Bulk Sync Engine
     let syncPaused = false;
     let syncCancelled = false;
 
     $('#r2g-btn-start-sync').on('click', function(e) {
       e.preventDefault();
+      if ($(this).is(':disabled')) return;
+
       syncPaused = false;
       syncCancelled = false;
 
@@ -214,14 +335,14 @@
       $('#r2g-sync-status-text').text('Sync paused by user.');
     });
 
-    // 6. Maintenance & Legacy Import
+    // 7. Maintenance & Legacy Import
     $('#r2g-btn-import-legacy').on('click', function(e) {
       e.preventDefault();
       const $btn = $(this);
       const $status = $('#r2g-import-status');
 
-      $btn.prop('disabled', true).text('Importing...');
-      $status.text('Scanning attachments and legacy records...');
+      $btn.prop('disabled', true).text('Scanning & Importing...');
+      $status.css('color', '#64748b').text('Scanning Media Cloud Sync (wpmcs_items) & attachments...');
 
       $.ajax({
         url: ajaxurl,
@@ -233,7 +354,7 @@
         },
         success: function(res) {
           if (res.success) {
-            $status.css('color', '#059669').text(res.data.message || 'Import successful!');
+            $status.css('color', '#059669').html('<strong>✓ ' + res.data.message + '</strong>');
             if (res.data.stats) {
               $('#r2g-stat-synced').text(res.data.stats.synced || 0);
               $('#r2g-stat-cloud').text(res.data.stats.cloud_only || 0);
@@ -258,7 +379,7 @@
       const $status = $('#r2g-reindex-status');
 
       $btn.prop('disabled', true).text('Scanning...');
-      $status.text('Verifying local files and database index...');
+      $status.css('color', '#64748b').text('Verifying local files and database index...');
 
       $.ajax({
         url: ajaxurl,
@@ -270,7 +391,7 @@
         },
         success: function(res) {
           if (res.success) {
-            $status.css('color', '#059669').text(res.data.message || 'Index refreshed!');
+            $status.css('color', '#059669').html('<strong>✓ ' + res.data.message + '</strong>');
             if (res.data.stats) {
               $('#r2g-stat-synced').text(res.data.stats.synced || 0);
               $('#r2g-stat-cloud').text(res.data.stats.cloud_only || 0);
@@ -289,7 +410,7 @@
       });
     });
 
-    // 7. Thumbnail Auto-healing: If an image fails in admin list table, fallback to full CDN image
+    // 8. Thumbnail Auto-healing: Fallback from broken thumbnail size to full CDN image
     $('table.media img, .media-icon img').on('error', function() {
       const $img = $(this);
       const src = $img.attr('src');

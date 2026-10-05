@@ -4,6 +4,7 @@
  *
  * Provides a clean, modern tabbed interface separating Connection,
  * Settings/Compression, Storage Dashboard & Bulk Sync, and Updates/Rollback.
+ * Includes live bucket discovery, pre-save connection testing, and granular controls.
  *
  * @package R2_By_Grisma
  */
@@ -34,8 +35,9 @@ class R2G_Admin {
         add_action('admin_init', array($this, 'handle_save_settings'));
         add_action('admin_enqueue_scripts', array($this, 'enqueue_admin_assets'));
 
-        // Ajax Test Connection
+        // Ajax Handlers
         add_action('wp_ajax_r2g_test_connection', array($this, 'ajax_test_connection'));
+        add_action('wp_ajax_r2g_fetch_buckets', array($this, 'ajax_fetch_buckets'));
     }
 
     /**
@@ -126,7 +128,12 @@ class R2G_Admin {
             // Credentials
             update_option('r2g_account_id', sanitize_text_field(wp_unslash($_POST['r2g_account_id'] ?? '')));
             update_option('r2g_access_key', sanitize_text_field(wp_unslash($_POST['r2g_access_key'] ?? '')));
-            update_option('r2g_bucket', sanitize_text_field(wp_unslash($_POST['r2g_bucket'] ?? '')));
+
+            $bucket = sanitize_text_field(wp_unslash($_POST['r2g_bucket'] ?? ''));
+            if (!empty($_POST['r2g_bucket_select'])) {
+                $bucket = sanitize_text_field(wp_unslash($_POST['r2g_bucket_select']));
+            }
+            update_option('r2g_bucket', $bucket);
 
             // Secret key
             $posted_secret = trim($_POST['r2g_secret_key'] ?? '');
@@ -144,6 +151,14 @@ class R2G_Admin {
         }
 
         if ($active_tab === 'settings') {
+            // Storage Path Structure
+            update_option('r2g_path_structure', sanitize_text_field(wp_unslash($_POST['r2g_path_structure'] ?? 'wp_content')));
+            update_option('r2g_path_prefix', sanitize_text_field(wp_unslash($_POST['r2g_path_prefix'] ?? '')));
+
+            // Thumbnail Offload Policy & Scope
+            update_option('r2g_upload_sizes', sanitize_text_field(wp_unslash($_POST['r2g_upload_sizes'] ?? 'all')));
+            update_option('r2g_cleanup_scope', sanitize_text_field(wp_unslash($_POST['r2g_cleanup_scope'] ?? 'all')));
+
             // Automation & Policies
             update_option('r2g_auto_upload', !empty($_POST['r2g_auto_upload']) ? 1 : 0);
             update_option('r2g_rewrite_urls', !empty($_POST['r2g_rewrite_urls']) ? 1 : 0);
@@ -163,6 +178,7 @@ class R2G_Admin {
 
     /**
      * Ajax: Test R2 Connection and Custom Domain verification
+     * Works LIVE from form inputs even before saving!
      */
     public function ajax_test_connection() {
         check_ajax_referer('r2g_admin_nonce', 'nonce');
@@ -170,13 +186,63 @@ class R2G_Admin {
             wp_send_json_error(array('message' => 'Unauthorized'));
         }
 
-        $client = r2_by_grisma()->get_client();
-        if (!$client || !$client->is_configured()) {
-            wp_send_json_error(array('message' => 'Cloudflare R2 credentials are incomplete. Please fill and save all fields.'));
+        // Read credentials from POST first, fallback to DB
+        $account_id = sanitize_text_field($_POST['account_id'] ?? '') ?: get_option('r2g_account_id', '');
+        $access_key = sanitize_text_field($_POST['access_key'] ?? '') ?: get_option('r2g_access_key', '');
+        $posted_secret = trim($_POST['secret_key'] ?? '');
+
+        if (!empty($posted_secret) && strpos($posted_secret, '••••') === false) {
+            $secret_key = $posted_secret;
+        } else {
+            $secret_key = R2G_Encryption::decrypt(get_option('r2g_secret_key', ''));
         }
 
-        $custom_domain = get_option('r2g_custom_domain', '');
+        $bucket = sanitize_text_field($_POST['bucket'] ?? '') ?: get_option('r2g_bucket', '');
+        $custom_domain = sanitize_text_field($_POST['custom_domain'] ?? '') ?: get_option('r2g_custom_domain', '');
+
+        if (empty($account_id) || empty($access_key) || empty($secret_key)) {
+            wp_send_json_error(array('message' => 'Please enter your Cloudflare Account ID, Access Key ID, and Secret Access Key.'));
+        }
+        if (empty($bucket)) {
+            wp_send_json_error(array('message' => 'Please select or enter an R2 Bucket name.'));
+        }
+
+        $client = new R2G_Client($account_id, $access_key, $secret_key, $bucket);
         $res = $client->test_connection($custom_domain);
+
+        if ($res['success']) {
+            wp_send_json_success($res);
+        } else {
+            wp_send_json_error($res);
+        }
+    }
+
+    /**
+     * Ajax: Fetch/Discover Buckets under Account
+     * Works LIVE from form inputs even before saving!
+     */
+    public function ajax_fetch_buckets() {
+        check_ajax_referer('r2g_admin_nonce', 'nonce');
+        if (!current_user_can('manage_options')) {
+            wp_send_json_error(array('message' => 'Unauthorized'));
+        }
+
+        $account_id = sanitize_text_field($_POST['account_id'] ?? '') ?: get_option('r2g_account_id', '');
+        $access_key = sanitize_text_field($_POST['access_key'] ?? '') ?: get_option('r2g_access_key', '');
+        $posted_secret = trim($_POST['secret_key'] ?? '');
+
+        if (!empty($posted_secret) && strpos($posted_secret, '••••') === false) {
+            $secret_key = $posted_secret;
+        } else {
+            $secret_key = R2G_Encryption::decrypt(get_option('r2g_secret_key', ''));
+        }
+
+        if (empty($account_id) || empty($access_key) || empty($secret_key)) {
+            wp_send_json_error(array('message' => 'Please enter Account ID, Access Key ID, and Secret Access Key first.'));
+        }
+
+        $client = new R2G_Client($account_id, $access_key, $secret_key, '');
+        $res = $client->list_buckets();
 
         if ($res['success']) {
             wp_send_json_success($res);
@@ -206,7 +272,16 @@ class R2G_Admin {
         $bucket        = get_option('r2g_bucket', '');
         $custom_domain = get_option('r2g_custom_domain', '');
 
-        // Policies & Compression
+        // Client configured check
+        $client = r2_by_grisma()->get_client();
+        $is_configured = $client && $client->is_configured();
+
+        // Policies & Path
+        $path_structure = get_option('r2g_path_structure', 'wp_content');
+        $path_prefix    = get_option('r2g_path_prefix', '');
+        $upload_sizes   = get_option('r2g_upload_sizes', 'all');
+        $cleanup_scope  = get_option('r2g_cleanup_scope', 'all');
+
         $auto_upload   = (int) get_option('r2g_auto_upload', 1);
         $rewrite_urls  = (int) get_option('r2g_rewrite_urls', 1);
         $del_from_r2   = (int) get_option('r2g_delete_from_r2', 1);
@@ -259,7 +334,7 @@ class R2G_Admin {
 
                     <div class="r2g-card">
                         <h2><?php esc_html_e('Cloudflare R2 Connection Credentials', 'r2-by-grisma'); ?></h2>
-                        <p class="description"><?php esc_html_e('Enter your S3-compatible Cloudflare R2 API credentials and Public Custom CDN domain.', 'r2-by-grisma'); ?></p>
+                        <p class="description"><?php esc_html_e('Enter your S3-compatible Cloudflare R2 API credentials, discover your buckets, and verify your custom CDN domain.', 'r2-by-grisma'); ?></p>
 
                         <table class="r2g-form-table">
                             <tr>
@@ -295,22 +370,34 @@ class R2G_Admin {
                             <tr>
                                 <th><label for="r2g_bucket"><?php esc_html_e('R2 Bucket Name', 'r2-by-grisma'); ?></label></th>
                                 <td>
-                                    <input type="text" id="r2g_bucket" name="r2g_bucket" value="<?php echo esc_attr($bucket); ?>" class="r2g-input" placeholder="e.g. topnepali" required />
+                                    <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; max-width:550px;">
+                                        <input type="text" id="r2g_bucket" name="r2g_bucket" value="<?php echo esc_attr($bucket); ?>" class="r2g-input" style="flex:1; min-width:200px;" placeholder="e.g. topnepali" required />
+                                        <select id="r2g_bucket_select" name="r2g_bucket_select" class="r2g-input" style="display:none; flex:1; min-width:200px;">
+                                            <option value=""><?php esc_html_e('-- Select Discovered Bucket --', 'r2-by-grisma'); ?></option>
+                                        </select>
+                                        <button type="button" id="r2g-btn-fetch-buckets" class="button button-secondary">
+                                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-1px; margin-right:3px;"><path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/></svg>
+                                            <?php esc_html_e('Discover Buckets', 'r2-by-grisma'); ?>
+                                        </button>
+                                    </div>
+                                    <div id="r2g-fetch-status" style="margin-top:6px; font-size:12px;"></div>
                                 </td>
                             </tr>
                             <tr>
                                 <th><label for="r2g_custom_domain"><?php esc_html_e('Custom CDN Domain', 'r2-by-grisma'); ?></label></th>
                                 <td>
                                     <input type="url" id="r2g_custom_domain" name="r2g_custom_domain" value="<?php echo esc_attr($custom_domain); ?>" class="r2g-input" placeholder="https://objects.topnepali.com" />
-                                    <p class="description"><?php esc_html_e('Your public custom domain or R2.dev public URL connected to this bucket.', 'r2-by-grisma'); ?></p>
+                                    <p class="description" id="r2g-domain-hint"><?php esc_html_e('Your public custom domain (e.g. https://objects.topnepali.com) or R2.dev public URL connected to this bucket.', 'r2-by-grisma'); ?></p>
                                 </td>
                             </tr>
                         </table>
 
-                        <div style="margin-top: 18px;">
+                        <div style="margin-top: 20px; padding-top: 16px; border-top: 1px solid #e2e8f0;">
                             <button type="button" id="r2g-btn-test-connection" class="button button-secondary">
-                                <?php esc_html_e('Test Connection & Verify CDN', 'r2-by-grisma'); ?>
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px; margin-right:4px;"><polyline points="20 6 9 17 4 12"/></svg>
+                                <?php esc_html_e('Test Connection & Verify CDN (Live)', 'r2-by-grisma'); ?>
                             </button>
+                            <span style="font-size:12px; color:#64748b; margin-left:10px;"><?php esc_html_e('Works immediately from the fields above without saving first.', 'r2-by-grisma'); ?></span>
                             <div id="r2g-test-status" style="display:none;" class="r2g-test-box"></div>
                         </div>
                     </div>
@@ -325,6 +412,70 @@ class R2G_Admin {
                 <form method="post" action="">
                     <?php wp_nonce_field('r2g_save_settings_nonce'); ?>
                     <input type="hidden" name="r2g_active_tab" value="settings" />
+
+                    <!-- Section: Storage Path & Directory Setup -->
+                    <div class="r2g-card">
+                        <h2><?php esc_html_e('Storage Directory Path & Structure', 'r2-by-grisma'); ?></h2>
+                        <p class="description"><?php esc_html_e('Configure how files and directories are organized in your Cloudflare R2 bucket.', 'r2-by-grisma'); ?></p>
+
+                        <table class="r2g-form-table">
+                            <tr>
+                                <th><?php esc_html_e('R2 Directory Structure', 'r2-by-grisma'); ?></th>
+                                <td>
+                                    <div class="r2g-radio-group">
+                                        <label class="r2g-radio-pill">
+                                            <input type="radio" name="r2g_path_structure" value="wp_content" <?php checked($path_structure, 'wp_content'); ?> />
+                                            <span><strong><?php esc_html_e('Standard WordPress (Recommended)', 'r2-by-grisma'); ?></strong>: <code>wp-content/uploads/YYYY/MM/file.webp</code></span>
+                                        </label>
+                                        <label class="r2g-radio-pill">
+                                            <input type="radio" name="r2g_path_structure" value="uploads_only" <?php checked($path_structure, 'uploads_only'); ?> />
+                                            <span><strong><?php esc_html_e('Short Uploads', 'r2-by-grisma'); ?></strong>: <code>uploads/YYYY/MM/file.webp</code></span>
+                                        </label>
+                                        <label class="r2g-radio-pill">
+                                            <input type="radio" name="r2g_path_structure" value="date_only" <?php checked($path_structure, 'date_only'); ?> />
+                                            <span><strong><?php esc_html_e('Date Hierarchy Only', 'r2-by-grisma'); ?></strong>: <code>YYYY/MM/file.webp</code></span>
+                                        </label>
+                                    </div>
+                                    <div style="margin-top:8px; padding:8px 12px; background:#f0fdf4; border:1px solid #bbf7d0; border-radius:6px; font-size:12px; color:#166534;">
+                                        <strong><?php esc_html_e('Existing Offload Setup Detected:', 'r2-by-grisma'); ?></strong>
+                                        <?php esc_html_e('Your existing offloaded files on objects.topnepali.com use Standard WordPress path (wp-content/uploads/). Selecting this maintains 100% path parity.', 'r2-by-grisma'); ?>
+                                    </div>
+                                </td>
+                            </tr>
+                            <tr>
+                                <th><?php esc_html_e('Thumbnail Sizes to Offload', 'r2-by-grisma'); ?></th>
+                                <td>
+                                    <div class="r2g-radio-group">
+                                        <label class="r2g-radio-pill">
+                                            <input type="radio" name="r2g_upload_sizes" value="all" <?php checked($upload_sizes, 'all'); ?> />
+                                            <span><?php esc_html_e('Offload All Generated Thumbnail Sizes (thumbnail, medium, large, full)', 'r2-by-grisma'); ?></span>
+                                        </label>
+                                        <label class="r2g-radio-pill">
+                                            <input type="radio" name="r2g_upload_sizes" value="original_only" <?php checked($upload_sizes, 'original_only'); ?> />
+                                            <span><?php esc_html_e('Offload Original Full-Resolution Image Only', 'r2-by-grisma'); ?></span>
+                                        </label>
+                                    </div>
+                                    <p class="description"><?php esc_html_e('Offloading all sizes ensures every thumbnail preview in WordPress and mobile devices loads from CDN.', 'r2-by-grisma'); ?></p>
+                                </td>
+                            </tr>
+                            <tr>
+                                <th><?php esc_html_e('Local Disk Cleanup Scope', 'r2-by-grisma'); ?></th>
+                                <td>
+                                    <div class="r2g-radio-group">
+                                        <label class="r2g-radio-pill">
+                                            <input type="radio" name="r2g_cleanup_scope" value="all" <?php checked($cleanup_scope, 'all'); ?> />
+                                            <span><?php esc_html_e('Delete all local files (Original + all generated thumbnail sizes)', 'r2-by-grisma'); ?></span>
+                                        </label>
+                                        <label class="r2g-radio-pill">
+                                            <input type="radio" name="r2g_cleanup_scope" value="original_only" <?php checked($cleanup_scope, 'original_only'); ?> />
+                                            <span><?php esc_html_e('Delete only original full-size image (Keep local thumbnail files on disk)', 'r2-by-grisma'); ?></span>
+                                        </label>
+                                    </div>
+                                    <p class="description"><?php esc_html_e('Active only when Server Storage Policy is set to "Cloud Only".', 'r2-by-grisma'); ?></p>
+                                </td>
+                            </tr>
+                        </table>
+                    </div>
 
                     <!-- Section: Automation Controls -->
                     <div class="r2g-card">
@@ -454,6 +605,20 @@ class R2G_Admin {
 
             <!-- TAB 3: STORAGE & MEDIA SYNC DASHBOARD -->
             <?php elseif ($active_tab === 'index'): ?>
+                <?php if (!$is_configured): ?>
+                    <div class="notice notice-warning inline" style="margin: 0 0 20px 0; padding: 14px 18px; border-left-color: #d97706;">
+                        <h3 style="margin: 0 0 6px 0; font-size: 15px; color: #92400e;">
+                            <?php esc_html_e('Cloudflare R2 Credentials Incomplete', 'r2-by-grisma'); ?>
+                        </h3>
+                        <p style="margin: 0; color: #78350f; font-size: 13px;">
+                            <?php esc_html_e('Please enter your Cloudflare Account ID, Access Key ID, Secret Key, and Bucket Name in the Setup & API Keys tab before starting bulk sync.', 'r2-by-grisma'); ?>
+                            <a href="<?php echo esc_url(add_query_arg('tab', 'setup')); ?>" class="button button-small" style="margin-left: 8px;">
+                                <?php esc_html_e('Go to Setup & API Keys ↗', 'r2-by-grisma'); ?>
+                            </a>
+                        </p>
+                    </div>
+                <?php endif; ?>
+
                 <!-- Stat Cards -->
                 <div class="r2g-stats-grid">
                     <div class="r2g-stat-card">
@@ -498,7 +663,7 @@ class R2G_Admin {
                         </div>
 
                         <div class="r2g-sync-actions" style="display:flex; gap:10px; align-items:center;">
-                            <button type="button" id="r2g-btn-start-sync" class="button button-primary button-large">
+                            <button type="button" id="r2g-btn-start-sync" class="button button-primary button-large" <?php echo !$is_configured ? 'disabled title="' . esc_attr__('Please complete Setup & API Keys first', 'r2-by-grisma') . '"' : ''; ?>>
                                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="vertical-align:-2px; margin-right:4px;"><path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/></svg>
                                 <?php esc_html_e('Sync All Unsynced to R2', 'r2-by-grisma'); ?>
                             </button>
@@ -520,7 +685,7 @@ class R2G_Admin {
                     <div style="display:flex; gap:16px; flex-wrap:wrap;">
                         <div style="flex:1; min-width:280px; padding:16px; background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px;">
                             <h3 style="margin-top:0; font-size:14px; font-weight:600; color:#0f172a;"><?php esc_html_e('Import from Media Cloud Sync / Existing Offload', 'r2-by-grisma'); ?></h3>
-                            <p style="font-size:12px; color:#64748b; margin-bottom:14px;"><?php esc_html_e('Detects files previously offloaded to R2 and imports them into R2 by Grisma so previews, CDN URLs, and controls immediately work.', 'r2-by-grisma'); ?></p>
+                            <p style="font-size:12px; color:#64748b; margin-bottom:14px;"><?php esc_html_e('Scans Media Cloud Sync table (wpmcs_items) and offloaded attachments, then registers them in R2 by Grisma so previews, CDN URLs, and controls immediately work.', 'r2-by-grisma'); ?></p>
                             <button type="button" id="r2g-btn-import-legacy" class="button button-secondary">
                                 <?php esc_html_e('Import Existing Offloaded Media', 'r2-by-grisma'); ?>
                             </button>

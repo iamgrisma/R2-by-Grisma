@@ -164,7 +164,7 @@ class R2G_Database {
     public static function mark_synced($attachment_id, $r2_key, $file_size = 0, $original_size = 0, $thumb_count = 0) {
         $post = get_post($attachment_id);
         $file_path = get_attached_file($attachment_id);
-        $has_local = !empty($file_path) && file_exists($file_path);
+        $has_local = !empty($file_path) && file_exists($file_path) && (filesize($file_path) > 300);
 
         return self::upsert($attachment_id, array(
             'r2_key'        => $r2_key,
@@ -350,107 +350,85 @@ class R2G_Database {
     }
 
     /**
-     * Migrate existing postmeta sync data into the database table
+     * Comprehensive Import of Existing Offloaded Media
+     * Scans Media Cloud Sync's native table (wpmcs_items), missing local files,
+     * dummy placeholder files, and legacy postmeta.
      *
-     * @return int Number of records migrated
-     */
-    public static function migrate_from_postmeta() {
-        global $wpdb;
-        $table = self::table();
-
-        $synced_ids = $wpdb->get_col(
-            "SELECT pm.post_id FROM {$wpdb->postmeta} pm
-             LEFT JOIN {$table} r ON pm.post_id = r.attachment_id
-             WHERE pm.meta_key = '_r2g_synced' AND pm.meta_value = '1' AND r.id IS NULL"
-        );
-
-        $migrated = 0;
-        foreach ($synced_ids as $id) {
-            $post = get_post($id);
-            if (!$post || $post->post_type !== 'attachment') {
-                continue;
-            }
-
-            $file_path = get_attached_file($id);
-            $r2_key = get_post_meta($id, '_r2g_key', true);
-            $synced_at = get_post_meta($id, '_r2g_synced_at', true);
-            $local_deleted = (bool) get_post_meta($id, '_r2g_local_deleted', true);
-            $has_local = !$local_deleted && !empty($file_path) && file_exists($file_path);
-
-            $file_size = 0;
-            if ($has_local && $file_path && file_exists($file_path)) {
-                $file_size = filesize($file_path);
-            }
-
-            $metadata = wp_get_attachment_metadata($id);
-            $thumb_count = !empty($metadata['sizes']) ? count($metadata['sizes']) : 0;
-
-            self::upsert($id, array(
-                'r2_key'        => $r2_key ?: '',
-                'file_name'     => basename($file_path ?: ''),
-                'mime_type'     => $post->post_mime_type,
-                'file_size'     => $file_size,
-                'original_size' => $file_size,
-                'status'        => 'synced',
-                'has_local'     => $has_local ? 1 : 0,
-                'thumb_count'   => $thumb_count,
-                'synced_at'     => $synced_at ?: current_time('mysql'),
-            ));
-            $migrated++;
-        }
-
-        if ($migrated > 0) {
-            update_option('r2g_postmeta_migrated', 1);
-        }
-
-        return $migrated;
-    }
-
-    /**
-     * Import existing media offloaded by previous plugins (e.g. Media Cloud Sync)
-     * Scans for missing local files or legacy postmeta and indexes them as synced in R2G
-     *
-     * @return int Number of legacy records imported
+     * @return array [ 'imported' => int, 'found_wpmcs' => int, 'found_offloaded' => int ]
      */
     public static function import_existing_offloaded() {
         global $wpdb;
         $table = self::table();
 
-        // 1. First run postmeta migration
-        self::migrate_from_postmeta();
+        // 1. Check Media Cloud Sync (Dudlewebs) MySQL table
+        $wpmcs_table = class_exists('Dudlewebs\\WPMCS\\Db')
+            ? \Dudlewebs\WPMCS\Db::get_table_name()
+            : $wpdb->prefix . 'wpmcs_items';
 
-        // 2. Find attachments with legacy cloud sync postmeta or missing local files
+        $wpmcs_exists = $wpdb->get_var($wpdb->prepare("SHOW TABLES LIKE %s", $wpmcs_table));
+        $wpmcs_synced_ids = array();
+
+        if ($wpmcs_exists) {
+            $wpmcs_synced_ids = $wpdb->get_col(
+                "SELECT DISTINCT source_id FROM {$wpmcs_table} WHERE source_type = 'media_library'"
+            );
+        }
+
+        // Also check any other table matching wpmcs or media_cloud
+        $extra_tables = $wpdb->get_col("SHOW TABLES LIKE '%wpmcs%'");
+        foreach ($extra_tables as $ext_tbl) {
+            if ($ext_tbl !== $wpmcs_table) {
+                $cols = $wpdb->get_col("DESCRIBE {$ext_tbl}");
+                if (in_array('source_id', $cols)) {
+                    $extra_ids = $wpdb->get_col("SELECT DISTINCT source_id FROM {$ext_tbl}");
+                    $wpmcs_synced_ids = array_merge($wpmcs_synced_ids, $extra_ids);
+                }
+            }
+        }
+        $wpmcs_synced_ids = array_unique(array_map('intval', $wpmcs_synced_ids));
+
+        // 2. Fetch all WordPress attachments
         $attachments = $wpdb->get_results(
             "SELECT ID, post_mime_type FROM {$wpdb->posts} WHERE post_type = 'attachment' AND post_status != 'trash'"
         );
 
         $imported = 0;
+        $found_wpmcs = 0;
+        $found_offloaded = 0;
+
         foreach ($attachments as $att) {
             $id = (int) $att->ID;
-
-            // Check if already synced in our table
-            $existing = $wpdb->get_row($wpdb->prepare(
-                "SELECT status, has_local FROM {$table} WHERE attachment_id = %d",
-                $id
-            ));
-
             $file_path = get_attached_file($id);
-            $has_local = !empty($file_path) && file_exists($file_path);
+            $has_local_file = !empty($file_path) && file_exists($file_path);
+            $local_size = $has_local_file ? filesize($file_path) : 0;
+            // Dummy placeholder detection: Media Cloud Sync leaves 111-byte placeholders when offloading
+            $is_dummy_placeholder = $has_local_file && ($local_size > 0 && $local_size < 300);
 
-            $is_legacy_synced = (
+            $is_wpmcs = in_array($id, $wpmcs_synced_ids);
+            $has_legacy_meta = (
                 get_post_meta($id, '_mcs_synced', true) ||
                 get_post_meta($id, '_media_cloud_sync_synced', true) ||
                 get_post_meta($id, '_cloud_url', true) ||
                 get_post_meta($id, '_amazonS3_info', true) ||
-                get_post_meta($id, '_r2g_synced', true) ||
-                (!$has_local && !empty($file_path)) // If local file is missing, it was offloaded!
+                get_post_meta($id, '_r2g_synced', true)
             );
 
-            if ($is_legacy_synced) {
-                $main_r2_key = R2G_Media_Handler::get_r2_key_from_path($file_path);
-                $file_size = $has_local ? filesize($file_path) : 0;
+            // Is offloaded if: in WPMCS table, or local file missing, or dummy placeholder, or legacy meta
+            $is_synced = $is_wpmcs || $has_legacy_meta || (!$has_local_file && !empty($file_path)) || $is_dummy_placeholder;
+
+            if ($is_synced) {
+                if ($is_wpmcs) $found_wpmcs++;
+                if (!$has_local_file || $is_dummy_placeholder) $found_offloaded++;
+
+                $main_r2_key = class_exists('R2G_Media_Handler')
+                    ? R2G_Media_Handler::get_r2_key_from_path($file_path)
+                    : 'wp-content/uploads/' . basename($file_path ?: '');
+
                 $metadata = wp_get_attachment_metadata($id);
                 $thumb_count = !empty($metadata['sizes']) ? count($metadata['sizes']) : 0;
+                $file_size = ($has_local_file && !$is_dummy_placeholder) ? $local_size : ($metadata['filesize'] ?? 0);
+
+                $real_has_local = $has_local_file && !$is_dummy_placeholder;
 
                 self::upsert($id, array(
                     'r2_key'        => $main_r2_key,
@@ -459,30 +437,34 @@ class R2G_Database {
                     'file_size'     => $file_size,
                     'original_size' => $file_size,
                     'status'        => 'synced',
-                    'has_local'     => $has_local ? 1 : 0,
+                    'has_local'     => $real_has_local ? 1 : 0,
                     'thumb_count'   => $thumb_count,
                     'synced_at'     => current_time('mysql'),
                 ));
 
-                // Also update native postmeta for full compatibility
+                // Also update native postmeta for full WordPress compatibility
                 update_post_meta($id, '_r2g_synced', 1);
                 update_post_meta($id, '_r2g_key', $main_r2_key);
-                if (!$has_local) {
+                if (!$real_has_local) {
                     update_post_meta($id, '_r2g_local_deleted', 1);
                 }
 
                 $imported++;
-            } elseif (!$existing) {
-                // Not synced, but index it as local/pending
+            } else {
+                // Register as local/pending
                 self::upsert($id, array(
                     'file_name' => basename($file_path ?: ''),
                     'mime_type' => $att->post_mime_type,
                     'status'    => 'pending',
-                    'has_local' => $has_local ? 1 : 0,
+                    'has_local' => 1,
                 ));
             }
         }
 
-        return $imported;
+        return array(
+            'imported'        => $imported,
+            'found_wpmcs'     => $found_wpmcs,
+            'found_offloaded' => $found_offloaded,
+        );
     }
 }

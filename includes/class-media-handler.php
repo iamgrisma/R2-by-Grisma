@@ -38,7 +38,7 @@ class R2G_Media_Handler {
 
     /**
      * Get R2 Key for a given absolute file path
-     * Preserves standard wp-content/uploads/YYYY/MM/filename.ext structure without random hash folders.
+     * Respects user-configured directory structure (Defaults to standard WordPress wp-content/uploads/ structure)
      *
      * @param string $file_path
      * @return string
@@ -48,19 +48,36 @@ class R2G_Media_Handler {
         $basedir = wp_normalize_path($uploads['basedir']);
         $normalized_file = wp_normalize_path($file_path);
 
+        $structure = get_option('r2g_path_structure', 'wp_content');
+        $custom_prefix = trim(get_option('r2g_path_prefix', ''), '/');
+
+        // Calculate relative path from basedir (e.g. 2026/10/file.webp)
+        $rel = '';
         if (strpos($normalized_file, $basedir) === 0) {
             $rel = ltrim(substr($normalized_file, strlen($basedir)), '/');
-            // Standard WordPress structure: wp-content/uploads/YYYY/MM/file.ext
-            return 'wp-content/uploads/' . $rel;
+        } else {
+            $content_dir = wp_normalize_path(WP_CONTENT_DIR);
+            if (strpos($normalized_file, $content_dir) === 0) {
+                $rel = ltrim(substr($normalized_file, strlen($content_dir)), '/');
+                if (strpos($rel, 'uploads/') === 0) {
+                    $rel = substr($rel, 8);
+                }
+            } else {
+                $rel = basename($file_path);
+            }
         }
 
-        // Fallback relative path
-        $content_dir = wp_normalize_path(WP_CONTENT_DIR);
-        if (strpos($normalized_file, $content_dir) === 0) {
-            return 'wp-content/' . ltrim(substr($normalized_file, strlen($content_dir)), '/');
+        switch ($structure) {
+            case 'uploads_only':
+                return 'uploads/' . $rel;
+            case 'date_only':
+                return $rel;
+            case 'custom':
+                return (!empty($custom_prefix) ? $custom_prefix . '/' : '') . $rel;
+            case 'wp_content':
+            default:
+                return 'wp-content/uploads/' . $rel;
         }
-
-        return 'wp-content/uploads/' . basename($file_path);
     }
 
     /**
@@ -136,7 +153,7 @@ class R2G_Media_Handler {
     }
 
     /**
-     * Upload an attachment and all its generated thumbnail sizes to Cloudflare R2
+     * Upload an attachment and its generated thumbnail sizes to Cloudflare R2
      *
      * @param int $attachment_id
      * @param bool $force_reupload
@@ -171,19 +188,23 @@ class R2G_Media_Handler {
         $uploaded_keys = array($main_r2_key);
         $thumb_count = 0;
 
-        // Upload thumbnail sizes
-        $metadata = wp_get_attachment_metadata($attachment_id);
-        $dir = dirname($file_path);
+        // Check thumbnail upload policy ('all' vs 'original_only')
+        $upload_sizes_mode = get_option('r2g_upload_sizes', 'all');
 
-        if (!empty($metadata['sizes']) && is_array($metadata['sizes'])) {
-            foreach ($metadata['sizes'] as $size_info) {
-                $thumb_path = $dir . '/' . $size_info['file'];
-                if (file_exists($thumb_path)) {
-                    $thumb_r2_key = self::get_r2_key_from_path($thumb_path);
-                    $put_thumb = $client->put_object($thumb_path, $thumb_r2_key, $size_info['mime-type'] ?? null);
-                    if ($put_thumb['success']) {
-                        $uploaded_keys[] = $thumb_r2_key;
-                        $thumb_count++;
+        if ($upload_sizes_mode === 'all') {
+            $metadata = wp_get_attachment_metadata($attachment_id);
+            $dir = dirname($file_path);
+
+            if (!empty($metadata['sizes']) && is_array($metadata['sizes'])) {
+                foreach ($metadata['sizes'] as $size_info) {
+                    $thumb_path = $dir . '/' . $size_info['file'];
+                    if (file_exists($thumb_path)) {
+                        $thumb_r2_key = self::get_r2_key_from_path($thumb_path);
+                        $put_thumb = $client->put_object($thumb_path, $thumb_r2_key, $size_info['mime-type'] ?? null);
+                        if ($put_thumb['success']) {
+                            $uploaded_keys[] = $thumb_r2_key;
+                            $thumb_count++;
+                        }
                     }
                 }
             }
@@ -204,6 +225,7 @@ class R2G_Media_Handler {
         // Handle "R2 Only" storage mode: remove local copies to save disk space
         $storage_mode = get_option('r2g_storage_mode', 'both');
         if ($storage_mode === 'r2_only') {
+            $metadata = wp_get_attachment_metadata($attachment_id);
             self::delete_local_files($attachment_id, $file_path, $metadata);
         }
 
@@ -226,11 +248,14 @@ class R2G_Media_Handler {
             $metadata = wp_get_attachment_metadata($attachment_id);
         }
 
+        // Check cleanup scope: 'all' vs 'original_only'
+        $cleanup_scope = get_option('r2g_cleanup_scope', 'all');
+
         if ($file_path && file_exists($file_path)) {
             @unlink($file_path);
         }
 
-        if (!empty($metadata['sizes']) && is_array($metadata['sizes']) && $file_path) {
+        if ($cleanup_scope === 'all' && !empty($metadata['sizes']) && is_array($metadata['sizes']) && $file_path) {
             $dir = dirname($file_path);
             foreach ($metadata['sizes'] as $size_info) {
                 $thumb_path = $dir . '/' . $size_info['file'];
@@ -338,7 +363,7 @@ class R2G_Media_Handler {
 
         // Check if local file still exists
         $file_path = get_attached_file($attachment_id);
-        $has_local = !empty($file_path) && file_exists($file_path);
+        $has_local = !empty($file_path) && file_exists($file_path) && (filesize($file_path) > 300);
 
         if ($has_local) {
             // Revert status to pending/local in database
@@ -361,7 +386,6 @@ class R2G_Media_Handler {
      * @param int $attachment_id
      */
     public function on_delete_attachment($attachment_id) {
-        // Check if delete from R2 is enabled (Default: 1)
         $delete_from_r2 = (int) get_option('r2g_delete_from_r2', 1);
 
         if ($delete_from_r2) {

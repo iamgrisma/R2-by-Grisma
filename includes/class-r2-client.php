@@ -53,7 +53,7 @@ class R2G_Client {
      * @param string $secret_key
      * @param string $bucket
      */
-    public function __construct($account_id, $access_key, $secret_key, $bucket) {
+    public function __construct($account_id, $access_key, $secret_key, $bucket = '') {
         $this->account_id = trim($account_id);
         $this->access_key = trim($access_key);
         $this->secret_key = trim($secret_key);
@@ -82,14 +82,22 @@ class R2G_Client {
      * Generate AWS Signature Version 4 Headers and make HTTP request
      *
      * @param string $method GET, PUT, DELETE, HEAD
-     * @param string $uri e.g. "/bucket/path/to/file.webp"
+     * @param string $uri e.g. "/bucket/path/to/file.webp" or "/"
      * @param string $payload Body content or empty
      * @param array $extra_headers Additional headers (e.g. Content-Type)
      * @return array [ 'success' => bool, 'code' => int, 'body' => string, 'error' => string ]
      */
     public function request($method, $uri, $payload = '', $extra_headers = array()) {
-        if (!$this->is_configured()) {
-            return array('success' => false, 'code' => 0, 'body' => '', 'error' => 'R2 credentials not fully configured.');
+        $is_root = ($uri === '/' || $uri === '');
+
+        if ($is_root) {
+            if (empty($this->account_id) || empty($this->access_key) || empty($this->secret_key)) {
+                return array('success' => false, 'code' => 0, 'body' => '', 'error' => 'Account ID, Access Key, and Secret Key are required.');
+            }
+        } else {
+            if (!$this->is_configured()) {
+                return array('success' => false, 'code' => 0, 'body' => '', 'error' => 'R2 credentials or bucket name not fully configured.');
+            }
         }
 
         $host = $this->get_endpoint_host();
@@ -98,8 +106,11 @@ class R2G_Client {
 
         // Clean URI path (ensure leading slash, no double slashes)
         $clean_uri = '/' . ltrim(preg_replace('#/+#', '/', $uri), '/');
+        if ($is_root) {
+            $clean_uri = '/';
+        }
 
-        // Payload hash (unsigned payload or sha256)
+        // Payload hash (sha256)
         $payload_hash = hash('sha256', $payload);
 
         // Canonical Headers
@@ -180,63 +191,109 @@ class R2G_Client {
         $curl_error = curl_error($ch);
         curl_close($ch);
 
-        if (!empty($curl_error)) {
+        if ($curl_error) {
+            return array('success' => false, 'code' => 0, 'body' => '', 'error' => "cURL error: {$curl_error}");
+        }
+
+        $success = ($http_code >= 200 && $http_code < 300);
+
+        $error_message = '';
+        if (!$success) {
+            if (!empty($response_body)) {
+                if (preg_match('#<Message>(.+?)</Message>#', $response_body, $matches)) {
+                    $error_message = $matches[1];
+                } elseif (preg_match('#<Code>(.+?)</Code>#', $response_body, $matches)) {
+                    $error_message = $matches[1];
+                } else {
+                    $error_message = wp_strip_all_tags($response_body);
+                }
+            } else {
+                $error_message = "HTTP {$http_code}";
+            }
+        }
+
+        return array(
+            'success' => $success,
+            'code'    => $http_code,
+            'body'    => $response_body,
+            'error'   => $error_message,
+        );
+    }
+
+    /**
+     * List all buckets under this Cloudflare Account
+     *
+     * @return array [ 'success' => bool, 'buckets' => array, 'error' => string, 'message' => string ]
+     */
+    public function list_buckets() {
+        if (empty($this->account_id) || empty($this->access_key) || empty($this->secret_key)) {
             return array(
                 'success' => false,
-                'code'    => 0,
-                'body'    => '',
-                'error'   => "Network/cURL error: {$curl_error}",
+                'buckets' => array(),
+                'error'   => 'Account ID, Access Key ID, and Secret Access Key are required to discover buckets.',
             );
         }
 
-        $is_success = ($http_code >= 200 && $http_code < 300);
+        $res = $this->request('GET', '/');
+
+        if (!$res['success']) {
+            return array(
+                'success' => false,
+                'buckets' => array(),
+                'error'   => !empty($res['error']) ? $res['error'] : 'Failed to list buckets. Verify your Account ID and credentials.',
+            );
+        }
+
+        $buckets = array();
+        if (!empty($res['body'])) {
+            if (preg_match_all('#<Name>([^<]+)</Name>#i', $res['body'], $matches)) {
+                $buckets = array_values(array_unique($matches[1]));
+            }
+        }
+
         return array(
-            'success' => $is_success,
-            'code'    => $http_code,
-            'body'    => $response_body,
-            'error'   => $is_success ? '' : "HTTP {$http_code}: " . strip_tags($response_body),
+            'success' => true,
+            'buckets' => $buckets,
+            'message' => sprintf('Discovered %d bucket(s) under this account.', count($buckets)),
         );
     }
 
     /**
      * Upload a local file to Cloudflare R2
      *
-     * @param string $local_file_path Absolute path to local file
-     * @param string $r2_key Relative destination path in bucket (e.g. wp-content/uploads/2026/10/photo.webp)
-     * @param string|null $content_type MIME type
-     * @return array [ 'success' => bool, 'code' => int, 'error' => string ]
+     * @param string $local_path Absolute file path
+     * @param string $r2_key Object key in bucket (e.g. wp-content/uploads/2026/10/photo.webp)
+     * @param string $mime_type Optional mime type
+     * @return array
      */
-    public function put_object($local_file_path, $r2_key, $content_type = null) {
-        if (!file_exists($local_file_path) || !is_readable($local_file_path)) {
-            return array('success' => false, 'code' => 0, 'error' => "Local file not found or unreadable: {$local_file_path}");
+    public function put_object($local_path, $r2_key, $mime_type = null) {
+        if (!file_exists($local_path)) {
+            return array('success' => false, 'code' => 0, 'error' => 'Local file does not exist.');
         }
 
-        $payload = file_get_contents($local_file_path);
+        $payload = file_get_contents($local_path);
         if ($payload === false) {
-            return array('success' => false, 'code' => 0, 'error' => "Failed to read local file contents.");
+            return array('success' => false, 'code' => 0, 'error' => 'Could not read local file.');
         }
 
-        if (empty($content_type)) {
-            $finfo = finfo_open(FILEINFO_MIME_TYPE);
-            $content_type = finfo_file($finfo, $local_file_path) ?: 'application/octet-stream';
-            finfo_close($finfo);
+        if (empty($mime_type)) {
+            $mime_type = wp_check_filetype($local_path)['type'] ?: 'application/octet-stream';
         }
 
         $uri = "/{$this->bucket}/" . ltrim($r2_key, '/');
-        $headers = array(
-            'Content-Type'   => $content_type,
-            'Content-Length' => strlen($payload),
-            'Cache-Control'  => 'public, max-age=31536000, immutable', // 1 Year Immutable Edge Cache
+        $extra_headers = array(
+            'Content-Type'  => $mime_type,
+            'Cache-Control' => 'public, max-age=31536000, immutable',
         );
 
-        return $this->request('PUT', $uri, $payload, $headers);
+        return $this->request('PUT', $uri, $payload, $extra_headers);
     }
 
     /**
      * Delete an object from Cloudflare R2
      *
-     * @param string $r2_key
-     * @return array [ 'success' => bool, 'code' => int, 'error' => string ]
+     * @param string $r2_key Object key to delete
+     * @return array
      */
     public function delete_object($r2_key) {
         $uri = "/{$this->bucket}/" . ltrim($r2_key, '/');
@@ -262,6 +319,13 @@ class R2G_Client {
      * @return array
      */
     public function test_connection($custom_domain = '') {
+        if (empty($this->bucket)) {
+            return array(
+                'success' => false,
+                'message' => 'Bucket name is required to run test connection. Please select or enter a bucket.',
+            );
+        }
+
         $test_key = '.r2-test-verification-' . wp_generate_password(8, false) . '.json';
         $test_payload = wp_json_encode(array(
             'status'     => 'ok',
@@ -307,7 +371,7 @@ class R2G_Client {
                 }
             } else {
                 $err = is_wp_error($cdn_response) ? $cdn_response->get_error_message() : 'HTTP ' . wp_remote_retrieve_response_code($cdn_response);
-                $cdn_message = "R2 upload succeeded, but Custom CDN URL failed to fetch test object: {$err}. Check DNS, Cloudflare custom domain routing, and SSL.";
+                $cdn_message = "R2 upload succeeded, but Custom CDN URL failed to fetch test object: {$err}. Check DNS and Cloudflare custom domain routing.";
             }
         }
 
@@ -320,7 +384,7 @@ class R2G_Client {
             'bucket'       => $this->bucket,
             'cdn_verified' => $cdn_verified,
             'cdn_message'  => $cdn_message,
-            'message'      => "Successfully connected to Cloudflare R2 (Latency: {$put_time}ms)." . ($cdn_verified ? " {$cdn_message}" : ""),
+            'message'      => "Successfully connected to Cloudflare R2 bucket '{$this->bucket}' (Latency: {$put_time}ms)." . ($cdn_verified ? " {$cdn_message}" : ""),
         );
     }
 }

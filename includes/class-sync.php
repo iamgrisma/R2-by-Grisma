@@ -35,12 +35,18 @@ class R2G_Sync {
 
     /**
      * Ajax: Sync a batch of unsynced attachments to R2
-     * Called repeatedly from the dashboard until all media is synced
      */
     public function ajax_bulk_sync_batch() {
         check_ajax_referer('r2g_admin_nonce', 'nonce');
         if (!current_user_can('manage_options')) {
             wp_send_json_error(array('message' => 'Unauthorized'));
+        }
+
+        $client = r2_by_grisma()->get_client();
+        if (!$client || !$client->is_configured()) {
+            wp_send_json_error(array(
+                'message' => 'Cloudflare R2 is not configured. Please enter your Account ID, Access Key, Secret Key, and Bucket in the Setup & API Keys tab first.',
+            ));
         }
 
         $batch_size = (int) ($_POST['batch_size'] ?? 5);
@@ -104,7 +110,6 @@ class R2G_Sync {
 
     /**
      * Ajax: Re-index all WordPress media into the database
-     * Scans all attachments and records their current state
      */
     public function ajax_reindex_media() {
         check_ajax_referer('r2g_admin_nonce', 'nonce');
@@ -112,13 +117,17 @@ class R2G_Sync {
             wp_send_json_error(array('message' => 'Unauthorized'));
         }
 
-        // Migrate postmeta data and scan attachments
-        $migrated = R2G_Database::import_existing_offloaded();
+        $res = R2G_Database::import_existing_offloaded();
 
         wp_send_json_success(array(
-            'migrated' => $migrated,
+            'migrated' => $res['imported'],
             'stats'    => R2G_Database::get_stats(),
-            'message'  => sprintf(esc_html__('Successfully scanned and indexed %d media attachments.', 'r2-by-grisma'), $migrated),
+            'message'  => sprintf(
+                esc_html__('Scanned library: Indexed %d media attachments (%d from Media Cloud Sync, %d offloaded).', 'r2-by-grisma'),
+                $res['imported'],
+                $res['found_wpmcs'],
+                $res['found_offloaded']
+            ),
         ));
     }
 
@@ -131,12 +140,17 @@ class R2G_Sync {
             wp_send_json_error(array('message' => 'Unauthorized'));
         }
 
-        $imported = R2G_Database::import_existing_offloaded();
+        $res = R2G_Database::import_existing_offloaded();
 
         wp_send_json_success(array(
-            'imported' => $imported,
+            'imported' => $res['imported'],
             'stats'    => R2G_Database::get_stats(),
-            'message'  => sprintf(esc_html__('Imported %d existing offloaded media items into R2 by Grisma.', 'r2-by-grisma'), $imported),
+            'message'  => sprintf(
+                esc_html__('Successfully imported %d media items (%d from Media Cloud Sync table, %d offloaded). Previews and CDN links active!', 'r2-by-grisma'),
+                $res['imported'],
+                $res['found_wpmcs'],
+                $res['found_offloaded']
+            ),
         ));
     }
 }
