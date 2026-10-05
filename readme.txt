@@ -4,7 +4,7 @@ Tags: r2, cloudflare, cloudflare r2, image optimization, webp, s3, offload media
 Requires at least: 5.8
 Tested up to: 6.7
 Requires PHP: 7.4
-Stable tag: 1.0.16
+Stable tag: 1.0.17
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -17,8 +17,11 @@ Enterprise Cloudflare R2 sync with upload-time format & compression controls, se
 ### Key Highlights
 * **Zero Vendor SDK Bloat:** Pure PHP AWS SigV4 implementation (<100KB footprint instead of 50MB AWS SDKs).
 * **Browser Upload Interceptor:** Halts uploads before server bandwidth is consumed; inspect preview, format, and dimensions with 1-click confirmation or override.
+* **In-Browser Compress Preview:** Live "Preview Compression" button produces instant Canvas WebP/JPG blobs in memory, displaying live image clarity, exact byte reduction, and savings percentage badge.
 * **Client-Side Canvas Compression:** Compresses and converts images to WebP/JPG right in the browser, eliminating 100% server CPU and hosting load.
 * **Upload-Time Control:** Preset defaults in Settings with full freedom to override format (WebP, JPEG, PNG, Original) and destination (Dual, Cloud Only, Local Only) per upload.
+* **Multi-File Batch Wildcard (*):** Batch carousel with wildcard apply-to-all options and thumbnail switcher.
+* **Universal Drag-and-Drop & Multi-Form Support:** Intercepts drag-and-drop across Gutenberg, Media Library, and native browser file uploader (`media-new.php?browser-uploader`).
 * **Streamlined Multi-Engine Support:** Choose between Browser Edge Canvas, Server PHP GD/Imagick, reSmush.it Free API (with automatic fallback), or Raw Offload in the exact same flow.
 * **Safe Bulk Sync & Verified Cleanup:** Bulk Sync NEVER auto-deletes local files. Reclaim server disk space on demand via safe verified cleanup.
 * **Universal Custom CDN Routing:** Rewrites URLs and responsive `srcset` for both Headless REST API (Astro, Next.js) and standard WordPress monolithic themes.
@@ -32,6 +35,16 @@ Enterprise Cloudflare R2 sync with upload-time format & compression controls, se
 4. Click **Test Connection & Verify CDN** to confirm connection.
 
 == Changelog ==
+
+= 1.0.17 =
+* Added In-Browser "Compress Preview" Action: Generates instant client-side Canvas blobs in browser memory. Displays live image quality, exact byte sizes, and green percentage savings badge (-XX%).
+* Dynamic Action Button Flow: Modal footer buttons intuitively adapt. Displays [Cancel Upload] and [Compress & Upload] initially; transforms to [Cancel Upload] and [✓ Upload Now] once pre-compressed. If settings are tweaked, prompts with [⚡ Re-compress].
+* Fixed Unresponsive Controls in Gutenberg: Stopped pointer/mouse event propagation to Gutenberg's canvas, ensuring all format buttons, engine toggles, destination radios, and the quality slider are 100% responsive and draggable.
+* Guaranteed Site Settings as Baseline Default: The modal always initializes to the configured site settings (Target Format, Quality, Engine, Destination) saved in WP Admin without stale cookie pollution.
+* Full Browser File Form (`media-new.php?browser-uploader`) Interception: Seamlessly intercepts file selection, replaces the file list with the client-compressed blob, injects parameters, and submits the form upon confirmation.
+* Enhanced Drag-and-Drop Interception: Eliminates auto-skip flags so every drag-and-drop onto Gutenberg or Media Library cleanly triggers the Interceptor modal.
+* Multi-File Batch Wildcard (*): Compact batch carousel with thumbnail selector, total batch size calculation, and wildcard setting to apply chosen format and quality across all batch files.
+* Enhanced Modal UX: Scrollable container (`max-height: 90vh`) with custom sleek scrollbar and top-priority z-index (`99999999`) above all WordPress UI layers.
 
 = 1.0.16 =
 * Completely removed sticky dropzone toolbar from DOM: eliminates unwanted bars from the UI, keeping the Media Library and editors 100% clean and native.
