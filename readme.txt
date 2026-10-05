@@ -4,7 +4,7 @@ Tags: r2, cloudflare, cloudflare r2, image optimization, webp, s3, offload media
 Requires at least: 5.8
 Tested up to: 6.7
 Requires PHP: 7.4
-Stable tag: 1.0.20
+Stable tag: 1.0.21
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -35,6 +35,11 @@ Enterprise Cloudflare R2 sync with upload-time format & compression controls, se
 4. Click **Test Connection & Verify CDN** to confirm connection.
 
 == Changelog ==
+
+= 1.0.21 =
+* Fixed a Plupload start race: hold image uploads before WordPress starts the request, show the interceptor first, and release the queue only after confirmation.
+* Remove cancelled files from the WordPress upload queue so cancelled items do not remain stuck in an Uploading state.
+* Support both exported Gutenberg media upload API locations for drag-and-drop interception.
 
 = 1.0.18 =
 * Gutenberg Promise & Upload Fix: Wrapped `wp.mediaUtils.uploadMedia` in a standard Promise and preserved `_clientCompressed` state across async REST uploads, resolving post editor queue hangs.

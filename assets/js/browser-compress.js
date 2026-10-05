@@ -1,6 +1,6 @@
 /**
  * R2 by Grisma — Universal Upload Interceptor & In-Browser Image Optimizer
- * Version: 1.0.20
+ * Version: 1.0.21
  *
  * Core Features:
  * 1. ZERO sticky bars in the DOM on page load.
@@ -929,6 +929,42 @@
         uploader._r2g_bound = true;
         self.currentUploader = uploader;
 
+        // WordPress installs its own FilesAdded handler before this plugin's
+        // handler. Core calls start() from that handler, so stopping from our
+        // later FilesAdded callback can race with the first network request.
+        // Mark image queues as held as soon as Plupload receives a file and
+        // gate start() until the interceptor's Proceed action releases it.
+        if (typeof uploader.addFile === 'function' && !uploader._r2g_add_file_wrapped) {
+          uploader._r2g_add_file_wrapped = true;
+          const originalAddFile = uploader.addFile;
+          uploader.addFile = function(file) {
+            const incoming = Array.isArray(file) ? file : [file];
+            if (self.config.interceptor !== 0 && incoming.some(function(item) { return self.isImage(item); })) {
+              this._r2g_hold_start = true;
+            }
+            return originalAddFile.apply(this, arguments);
+          };
+        }
+
+        if (typeof uploader.start === 'function' && !uploader._r2g_start_wrapped) {
+          uploader._r2g_start_wrapped = true;
+          const originalStart = uploader.start;
+          uploader.start = function() {
+            if (this._r2g_hold_start && !this._r2g_allow_start) return;
+            return originalStart.apply(this, arguments);
+          };
+        }
+
+        const startQueue = function(up) {
+          up._r2g_hold_start = false;
+          up._r2g_allow_start = true;
+          try {
+            up.start();
+          } finally {
+            up._r2g_allow_start = false;
+          }
+        };
+
         // Prevent Plupload from racing ahead before user interacts with interceptor modal
         uploader.settings.autostart = false;
 
@@ -952,14 +988,15 @@
 
           if (self.config.interceptor === 0) {
             applyParams(up);
+            up._r2g_hold_start = false;
             if (self.engine === 'browser') {
               up.stop();
               self.compressBatch(imageFiles).then(function() {
                 applyParams(up);
-                up.start();
+                startQueue(up);
               });
             } else {
-              up.start();
+              startQueue(up);
             }
             return;
           }
@@ -993,7 +1030,7 @@
                 f._r2g_client_compressed = !!self.previewBlob._r2g_canvas_processed;
                 applyParams(up);
                 try { up.trigger('QueueChanged'); up.refresh(); } catch (e) {}
-                up.start();
+                startQueue(up);
               } else if (self.engine === 'browser') {
                 self.compressBatch(imageFiles).then(function() {
                   applyParams(up);
@@ -1001,19 +1038,23 @@
                     f.status = queuedStatus;
                   });
                   try { up.trigger('QueueChanged'); up.refresh(); } catch (e) {}
-                  up.start();
+                  startQueue(up);
                 });
               } else {
                 delete up.settings.multipart_params['r2g_client_compressed'];
                 applyParams(up);
                 try { up.trigger('QueueChanged'); up.refresh(); } catch (e) {}
-                up.start();
+                startQueue(up);
               }
             },
             // onCancel:
             function() {
+              up._r2g_hold_start = false;
               files.forEach(function(f) {
                 try { up.removeFile(f); } catch (e) {}
+                if (f.attachment && typeof wp !== 'undefined' && wp.Uploader && wp.Uploader.queue) {
+                  wp.Uploader.queue.remove(f.attachment);
+                }
               });
               try { up.trigger('QueueChanged'); up.refresh(); } catch (e) {}
             }
@@ -1110,15 +1151,21 @@
 
       // 2. Intercept Gutenberg wp.mediaUtils.uploadMedia
       const wrapGutenberg = function() {
-        if (typeof window.wp === 'undefined' || !wp.mediaUtils || !wp.mediaUtils.uploadMedia) {
+        if (typeof window.wp === 'undefined' || !wp.mediaUtils) {
           return false;
         }
-        if (wp.mediaUtils._r2g_wrapped) {
+        const mediaUploadApi = (typeof wp.mediaUtils.uploadMedia === 'function')
+          ? wp.mediaUtils
+          : (wp.mediaUtils.utils && typeof wp.mediaUtils.utils.uploadMedia === 'function' ? wp.mediaUtils.utils : null);
+        if (!mediaUploadApi) {
+          return false;
+        }
+        if (mediaUploadApi._r2g_wrapped) {
           return true;
         }
-        wp.mediaUtils._r2g_wrapped = true;
+        mediaUploadApi._r2g_wrapped = true;
 
-        const originalUploadMedia = wp.mediaUtils.uploadMedia;
+        const originalUploadMedia = mediaUploadApi.uploadMedia;
 
         const wrappedUploadMedia = function(options) {
           if (!options || !options.filesList || options.filesList.length === 0) {
@@ -1231,7 +1278,7 @@
           });
         };
 
-        wp.mediaUtils.uploadMedia = wrappedUploadMedia;
+        mediaUploadApi.uploadMedia = wrappedUploadMedia;
 
         // Synchronize wrapped function with core/block-editor and core/editor settings
         const syncEditorStores = function() {
