@@ -75,11 +75,15 @@ class R2G_Optimizer {
             return array('success' => false, 'file_path' => $file_path, 'mime' => '', 'width' => 0, 'height' => 0, 'bytes_saved' => 0);
         }
 
+        $engine = $options['engine'] ?? get_option('r2g_compress_engine', 'server');
         $format = strtolower($options['format'] ?? 'webp');
         if ($format === 'jpeg') {
             $format = 'jpg';
         }
         $compress = isset($options['compress']) ? (bool)$options['compress'] : true;
+        if ($engine === 'none') {
+            $compress = false;
+        }
         $quality = (int)($options['quality'] ?? 82);
         $max_width = (int)($options['max_width'] ?? 1920);
 
@@ -106,6 +110,11 @@ class R2G_Optimizer {
             return array('success' => true, 'file_path' => $file_path, 'mime' => '', 'width' => 0, 'height' => 0, 'bytes_saved' => 0);
         }
 
+        // If browser already pre-compressed and no format conversion needed
+        if ($engine === 'browser' && !empty($options['client_compressed']) && !$needs_format_change) {
+            return array('success' => true, 'file_path' => $file_path, 'mime' => '', 'width' => 0, 'height' => 0, 'bytes_saved' => 0);
+        }
+
         $original_size = filesize($file_path);
 
         $editor = wp_get_image_editor($file_path);
@@ -113,7 +122,7 @@ class R2G_Optimizer {
             return array('success' => false, 'file_path' => $file_path, 'mime' => '', 'width' => 0, 'height' => 0, 'bytes_saved' => 0);
         }
 
-        // Set compression quality
+        // Set compression quality for server / fallback
         if ($compress) {
             $editor->set_quality($quality);
         }
@@ -167,13 +176,23 @@ class R2G_Optimizer {
         }
 
         $final_path = $saved['path'] ?? $target_file;
-        $new_size = file_exists($final_path) ? filesize($final_path) : $original_size;
 
         // If converted to a new format/file and distinct from original, delete old original file
         if ($final_path !== $file_path && file_exists($file_path)) {
             @unlink($file_path);
         }
 
+        // If reSmush.it engine is selected, attempt reSmush compression with automatic fallback
+        if ($engine === 'resmush' && $compress && file_exists($final_path)) {
+            $current_file_size = filesize($final_path);
+            // reSmush.it limit: max 5MB (5242880 bytes)
+            if ($current_file_size <= 5242880 && $current_file_size > 0) {
+                self::resmush_file($final_path, $quality);
+            }
+            // If > 5MB, GD/Imagick set_quality has already processed it safely as fallback!
+        }
+
+        $new_size = file_exists($final_path) ? filesize($final_path) : $original_size;
         $final_size = $editor->get_size();
         $bytes_saved = max(0, $original_size - $new_size);
 
@@ -185,5 +204,73 @@ class R2G_Optimizer {
             'height'      => $final_size['height'] ?? ($size['height'] ?? 0),
             'bytes_saved' => $bytes_saved,
         );
+    }
+
+    /**
+     * Compress an image using reSmush.it Free Web Service API
+     * Enforces a strict 15s timeout and 5MB max size.
+     * Returns true if successfully compressed to a smaller file, false on failure or fallback.
+     *
+     * @param string $file_path Absolute path to the file
+     * @param int $quality Target quality 50-100
+     * @return bool
+     */
+    public static function resmush_file($file_path, $quality = 82) {
+        if (!file_exists($file_path) || !is_readable($file_path)) {
+            return false;
+        }
+
+        $size = filesize($file_path);
+        if ($size > 5242880 || $size === 0) {
+            return false; // Exceeds 5MB reSmush limit; fallback to GD/Imagick
+        }
+
+        $ext = strtolower(pathinfo($file_path, PATHINFO_EXTENSION));
+        if (!in_array($ext, array('jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp'), true)) {
+            return false;
+        }
+
+        $boundary = wp_generate_password(24, false);
+        $file_content = @file_get_contents($file_path);
+        if ($file_content === false) {
+            return false;
+        }
+
+        $payload = "--{$boundary}\r\n"
+            . "Content-Disposition: form-data; name=\"files\"; filename=\"" . basename($file_path) . "\"\r\n"
+            . "Content-Type: application/octet-stream\r\n\r\n"
+            . $file_content . "\r\n"
+            . "--{$boundary}--\r\n";
+
+        $url = 'http://api.resmush.it/ws.php?qlty=' . max(50, min(100, $quality));
+        $response = wp_remote_post($url, array(
+            'timeout' => 15,
+            'headers' => array(
+                'Content-Type' => "multipart/form-data; boundary={$boundary}",
+            ),
+            'body'    => $payload,
+        ));
+
+        if (is_wp_error($response) || wp_remote_retrieve_response_code($response) !== 200) {
+            return false; // Network error or API down; fallback to GD/Imagick
+        }
+
+        $data = json_decode(wp_remote_retrieve_body($response), true);
+        if (empty($data['dest'])) {
+            return false;
+        }
+
+        $compressed_img = wp_remote_get($data['dest'], array('timeout' => 15));
+        if (is_wp_error($compressed_img) || wp_remote_retrieve_response_code($compressed_img) !== 200) {
+            return false;
+        }
+
+        $new_bytes = wp_remote_retrieve_body($compressed_img);
+        if (strlen($new_bytes) > 0 && strlen($new_bytes) < $size) {
+            @file_put_contents($file_path, $new_bytes);
+            return true;
+        }
+
+        return false;
     }
 }

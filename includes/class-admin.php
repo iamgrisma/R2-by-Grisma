@@ -110,6 +110,7 @@ class R2G_Admin {
         );
 
         wp_localize_script('r2g-browser-compress-js', 'r2g_compress_config', array(
+            'engine'    => get_option('r2g_compress_engine', 'server'),
             'workflow'  => get_option('r2g_upload_workflow', 'bar'),
             'preset'    => get_option('r2g_active_preset', 'webp_balanced'),
             'format'    => get_option('r2g_compress_format', 'webp'),
@@ -173,6 +174,7 @@ class R2G_Admin {
             update_option('r2g_rewrite_urls', !empty($_POST['r2g_rewrite_urls']) ? 1 : 0);
             update_option('r2g_delete_from_r2', !empty($_POST['r2g_delete_from_r2']) ? 1 : 0);
             update_option('r2g_storage_mode', sanitize_text_field(wp_unslash($_POST['r2g_storage_mode'] ?? 'both')));
+            update_option('r2g_compress_engine', sanitize_text_field(wp_unslash($_POST['r2g_compress_engine'] ?? 'server')));
 
             // Presets & Compression
             $preset = sanitize_text_field(wp_unslash($_POST['r2g_active_preset'] ?? 'webp_balanced'));
@@ -314,6 +316,7 @@ class R2G_Admin {
         $quality           = (int) get_option('r2g_compress_quality', 82);
         $max_width         = (int) get_option('r2g_max_width', 1920);
         $workflow          = get_option('r2g_upload_workflow', 'bar');
+        $engine            = get_option('r2g_compress_engine', 'server');
 
         // Stats
         $stats = class_exists('R2G_Database') ? R2G_Database::get_stats() : array();
@@ -561,6 +564,28 @@ class R2G_Admin {
                         <p class="description"><?php esc_html_e('Configure default presets for image format conversion and compression. During upload, you can seamlessly switch presets or customize on the fly.', 'r2-by-grisma'); ?></p>
 
                         <table class="r2g-form-table">
+                            <tr>
+                                <th><label for="r2g_compress_engine"><?php esc_html_e('Optimization & Compression Engine', 'r2-by-grisma'); ?></label></th>
+                                <td>
+                                    <select name="r2g_compress_engine" id="r2g_compress_engine" class="r2g-input" style="max-width:400px; font-weight:600;">
+                                        <option value="server" <?php selected($engine, 'server'); ?>>
+                                            <?php esc_html_e('Server: PHP GD / Imagick (Recommended — Native, Instant)', 'r2-by-grisma'); ?>
+                                        </option>
+                                        <option value="resmush" <?php selected($engine, 'resmush'); ?>>
+                                            <?php esc_html_e('reSmush.it Free API (Auto-fallback to GD/Imagick for >5MB)', 'r2-by-grisma'); ?>
+                                        </option>
+                                        <option value="browser" <?php selected($engine, 'browser'); ?>>
+                                            <?php esc_html_e('Browser Edge (Client-side HTML5 Canvas)', 'r2-by-grisma'); ?>
+                                        </option>
+                                        <option value="none" <?php selected($engine, 'none'); ?>>
+                                            <?php esc_html_e('Raw Offload (No Compression / Lossless)', 'r2-by-grisma'); ?>
+                                        </option>
+                                    </select>
+                                    <p class="description">
+                                        <?php esc_html_e('Regardless of engine, uploads follow the same streamlined flow. If an image exceeds reSmush.it 5MB limit or the API is offline, it automatically falls back to server GD/Imagick.', 'r2-by-grisma'); ?>
+                                    </p>
+                                </td>
+                            </tr>
                             <tr>
                                 <th><label for="r2g_active_preset"><?php esc_html_e('Default Optimization Preset', 'r2-by-grisma'); ?></label></th>
                                 <td>

@@ -1,12 +1,12 @@
 /**
  * R2 by Grisma — Universal Upload-Time Control & Preference Interceptor
  *
- * Provides complete control over image format conversion and compression at upload time:
- * 1. Seamlessly injects interactive R2 Preset & Format controls inside the "Select or Upload Media" modal
- * 2. Injects prominent R2 Configuration Card inside the "Upload files" tab dropzone
- * 3. Injects toolbar on Media Library and Add New screens
+ * Provides streamlined control over image format conversion and compression:
+ * 1. Injects ONE unified, responsive toolbar in Media Modal and upload screens
+ * 2. 2-way real-time synchronization between Presets, Format pills, and Quality slider
+ * 3. Responsive live percentage badge on mobile and desktop without touch drag freezing
  * 4. Dispatches chosen preset, format, and compression via Plupload multipart_params, REST headers, and Cookies
- * 5. Eliminates queue-freezing up.stop() calls so Plupload and Gutenberg uploads never hang
+ * 5. Eliminates queue-freezing calls so Plupload and Gutenberg uploads never hang
  *
  * @package R2_By_Grisma
  */
@@ -17,6 +17,7 @@
 
   const R2G_UploadManager = {
     config: window.r2g_compress_config || {
+      engine: 'server',
       workflow: 'bar',
       preset: 'webp_balanced',
       format: 'webp',
@@ -45,12 +46,33 @@
     },
 
     init: function() {
-      // 1. Initialize active preferences from cookies or config
-      this.preset = this.getCookie('r2g_preset') || this.config.preset || 'webp_balanced';
-      this.format = this.getCookie('r2g_format') || this.config.format || 'webp';
-      this.compress = this.getCookie('r2g_compress') !== null ? parseInt(this.getCookie('r2g_compress'), 10) : (this.config.compress !== undefined ? this.config.compress : 1);
-      this.quality = this.getCookie('r2g_quality') ? parseInt(this.getCookie('r2g_quality'), 10) : (this.config.quality || 82);
-      this.maxWidth = this.getCookie('r2g_max_width') ? parseInt(this.getCookie('r2g_max_width'), 10) : (this.config.maxWidth || 1920);
+      // 1. Initialize active preferences
+      // If user customized within this active browser session, respect their session choices
+      const userCustomized = sessionStorage.getItem('r2g_session_customized') === 'true';
+
+      if (userCustomized && this.getCookie('r2g_preset')) {
+        this.preset = this.getCookie('r2g_preset');
+        this.format = this.getCookie('r2g_format') || 'webp';
+        this.compress = this.getCookie('r2g_compress') !== null ? parseInt(this.getCookie('r2g_compress'), 10) : 1;
+        this.quality = this.getCookie('r2g_quality') ? parseInt(this.getCookie('r2g_quality'), 10) : 82;
+        this.maxWidth = this.getCookie('r2g_max_width') ? parseInt(this.getCookie('r2g_max_width'), 10) : 1920;
+      } else {
+        // Initial load: strictly use WordPress database config
+        this.preset = this.config.preset || 'webp_balanced';
+        const presets = this.config.presets || {};
+        if (presets[this.preset]) {
+          const p = presets[this.preset];
+          this.format = p.format || 'webp';
+          this.compress = (p.compress !== undefined) ? parseInt(p.compress, 10) : 1;
+          this.quality = parseInt(p.quality, 10) || 82;
+          this.maxWidth = parseInt(p.max_width, 10) || 1920;
+        } else {
+          this.format = this.config.format || 'webp';
+          this.compress = (this.config.compress !== undefined) ? this.config.compress : 1;
+          this.quality = this.config.quality || 82;
+          this.maxWidth = this.config.maxWidth || 1920;
+        }
+      }
 
       this.syncCookies();
 
@@ -74,6 +96,8 @@
 
     applyPreset: function(presetKey) {
       this.preset = presetKey;
+      sessionStorage.setItem('r2g_session_customized', 'true');
+
       const presets = this.config.presets || {};
       if (presets[presetKey]) {
         const p = presets[presetKey];
@@ -82,7 +106,53 @@
         this.quality = parseInt(p.quality, 10) || 82;
         this.maxWidth = parseInt(p.max_width, 10) || 1920;
       }
+
       this.syncAllControls();
+    },
+
+    setFormat: function(newFormat) {
+      this.format = newFormat;
+      sessionStorage.setItem('r2g_session_customized', 'true');
+
+      // Check if format matches an existing preset
+      const presets = this.config.presets || {};
+      let matched = 'custom';
+      for (const [key, p] of Object.entries(presets)) {
+        if (key === 'custom') continue;
+        if (p.format === newFormat && parseInt(p.quality, 10) === this.quality) {
+          matched = key;
+          break;
+        }
+      }
+      if (matched === 'custom') {
+        if (newFormat === 'webp') matched = 'webp_balanced';
+        else if (newFormat === 'jpg') matched = 'jpeg_balanced';
+        else if (newFormat === 'original') matched = (this.compress === 0 ? 'raw_lossless' : 'original_compressed');
+      }
+
+      this.preset = matched;
+      if (presets[matched] && matched !== 'custom') {
+        this.quality = parseInt(presets[matched].quality, 10) || 82;
+        this.compress = (presets[matched].compress !== undefined) ? parseInt(presets[matched].compress, 10) : 1;
+      }
+
+      this.syncAllControls();
+    },
+
+    setQuality: function(newQuality, sourceEl) {
+      this.quality = parseInt(newQuality, 10);
+      sessionStorage.setItem('r2g_session_customized', 'true');
+      this.preset = 'custom';
+
+      // Update badge text instantly without interrupting touch drag
+      $('.r2g-quality-badge, .r2g-quality-val').text(this.quality + '%');
+
+      // Sync other slider elements if any
+      $('.r2g-quality-slider').not(sourceEl).val(this.quality);
+      $('.r2g-control-preset').val('custom');
+
+      this.syncCookies();
+      this.updateUploaderParams();
     },
 
     syncAllControls: function() {
@@ -90,50 +160,48 @@
 
       // Sync select dropdowns
       $('.r2g-control-preset').val(this.preset);
-      $('.r2g-control-format').val(this.format);
-      $('.r2g-control-compress').val(this.compress);
 
-      // Sync radio pills
-      $('input[name="r2g_inline_fmt"][value="' + this.format + '"]').prop('checked', true);
-      $('input[name="r2g_inline_cmp"][value="' + this.compress + '"]').prop('checked', true);
-
-      // Update active pill classes
+      // Update active format buttons
       $('.r2g-format-btn').removeClass('r2g-btn-active');
       $('.r2g-format-btn[data-format="' + this.format + '"]').addClass('r2g-btn-active');
 
-      $('input[name="r2g_inline_fmt"]').each(function() {
-        $(this).closest('.r2g-radio-pill').toggleClass('r2g-pill-active', $(this).is(':checked'));
-      });
-      $('input[name="r2g_inline_cmp"]').each(function() {
-        $(this).closest('.r2g-radio-pill').toggleClass('r2g-pill-active', $(this).is(':checked'));
-      });
-
-      // Update quality sliders and labels
+      // Update quality sliders and badges
       $('.r2g-quality-slider').val(this.quality);
-      $('.r2g-quality-val').text(this.quality + '%');
+      $('.r2g-quality-badge, .r2g-quality-val').text(this.quality + '%');
 
       if (this.compress === 0) {
         $('.r2g-quality-wrap').hide();
       } else {
         $('.r2g-quality-wrap').show();
       }
+
+      this.updateUploaderParams();
     },
 
-    isPromptMode: function() {
-      if (this.config.workflow !== 'prompt') return false;
-      if (sessionStorage.getItem('r2g_session_remember') === 'true') return false;
-      return true;
+    updateUploaderParams: function() {
+      if (this.currentUploader && this.currentUploader.settings) {
+        this.currentUploader.settings.multipart_params = this.currentUploader.settings.multipart_params || {};
+        this.currentUploader.settings.multipart_params['r2g_preset'] = this.preset;
+        this.currentUploader.settings.multipart_params['r2g_format'] = this.format;
+        this.currentUploader.settings.multipart_params['r2g_compress'] = this.compress;
+        this.currentUploader.settings.multipart_params['r2g_quality'] = this.quality;
+        this.currentUploader.settings.multipart_params['r2g_max_width'] = this.maxWidth;
+      }
     },
 
     /**
-     * DOM Watcher: Injects controls into Media Modal tabs and upload dropzone
+     * DOM Watcher: Injects EXACTLY ONE clean, responsive toolbar
      */
     startDomWatcher: function() {
       const self = this;
 
       const checkAndInject = function() {
-        // If workflow is set to silent automatic, do not inject upload controls
         if (self.config.workflow === 'automatic') return;
+
+        // If toolbar already exists in DOM, do NOT inject another one!
+        if ($('#r2g-upload-toolbar').length) {
+          return;
+        }
 
         const presets = self.config.presets || {};
         let presetOptionsHtml = '';
@@ -142,126 +210,75 @@
           presetOptionsHtml += '<option value="' + key + '" ' + sel + '>' + (p.name || key) + '</option>';
         }
 
-        // 1. Inject into "Select or Upload Media" Modal Top Tab Bar (.media-frame-router)
-        const $frameRouter = $('.media-frame-router').first();
-        if ($frameRouter.length && !$('#r2g-modal-top-bar').length) {
-          const topBarHtml = `
-            <div id="r2g-modal-top-bar" class="r2g-media-modal-top-bar">
-              <span class="r2g-top-bar-badge">
-                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/></svg>
-                R2 Preset:
-              </span>
-              <select class="r2g-control-preset">
-                ${presetOptionsHtml}
-              </select>
-              <div class="r2g-format-group" style="display:inline-flex; gap:3px;">
-                <button type="button" class="button button-small r2g-format-btn ${self.format === 'webp' ? 'r2g-btn-active' : ''}" data-format="webp">WebP</button>
-                <button type="button" class="button button-small r2g-format-btn ${self.format === 'jpg' ? 'r2g-btn-active' : ''}" data-format="jpg">JPG</button>
-                <button type="button" class="button button-small r2g-format-btn ${self.format === 'png' ? 'r2g-btn-active' : ''}" data-format="png">PNG</button>
-                <button type="button" class="button button-small r2g-format-btn ${self.format === 'original' ? 'r2g-btn-active' : ''}" data-format="original">Original</button>
-              </div>
-              <span class="r2g-quality-wrap" style="${self.compress === 0 ? 'display:none;' : ''}">
-                <span class="r2g-quality-val" style="font-weight:600; font-size:11px;">${self.quality}%</span>
-              </span>
-            </div>
-          `;
-          $frameRouter.append(topBarHtml);
-        }
+        const engine = self.config.engine || 'server';
+        let engineLabel = 'PHP GD/Imagick';
+        if (engine === 'resmush') engineLabel = 'reSmush.it (auto-fallback)';
+        else if (engine === 'browser') engineLabel = 'Browser Canvas';
+        else if (engine === 'none') engineLabel = 'Lossless Offload';
 
-        // 2. Inject prominent Card inside the "Upload files" Tab dropzone (.uploader-inline)
-        const $uploadUi = $('.uploader-inline .upload-ui').first();
-        if ($uploadUi.length && !$('#r2g-inline-upload-card').length) {
-          const cardHtml = `
-            <div id="r2g-inline-upload-card" class="r2g-inline-upload-card">
-              <div class="r2g-inline-card-header">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/></svg>
-                <span>Cloudflare R2 Optimization & Conversion Preset</span>
+        const toolbarHtml = `
+          <div id="r2g-upload-toolbar" class="r2g-upload-toolbar">
+            <div class="r2g-toolbar-header">
+              <div class="r2g-toolbar-title">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/></svg>
+                <span>Cloudflare R2 Optimization</span>
               </div>
-              <div class="r2g-inline-card-body">
-                <div class="r2g-inline-field">
-                  <label>Preset:</label>
-                  <select class="r2g-control-preset r2g-input" style="max-width:280px; font-weight:600;">
-                    ${presetOptionsHtml}
-                  </select>
-                </div>
-                <div class="r2g-inline-field">
-                  <label>Target Format:</label>
-                  <div class="r2g-inline-pills">
-                    <label class="r2g-radio-pill ${self.format === 'webp' ? 'r2g-pill-active' : ''}">
-                      <input type="radio" name="r2g_inline_fmt" value="webp" ${self.format === 'webp' ? 'checked' : ''}>
-                      <span><strong>WebP</strong></span>
-                    </label>
-                    <label class="r2g-radio-pill ${self.format === 'jpg' ? 'r2g-pill-active' : ''}">
-                      <input type="radio" name="r2g_inline_fmt" value="jpg" ${self.format === 'jpg' ? 'checked' : ''}>
-                      <span><strong>JPEG / JPG</strong></span>
-                    </label>
-                    <label class="r2g-radio-pill ${self.format === 'png' ? 'r2g-pill-active' : ''}">
-                      <input type="radio" name="r2g_inline_fmt" value="png" ${self.format === 'png' ? 'checked' : ''}>
-                      <span>PNG</span>
-                    </label>
-                    <label class="r2g-radio-pill ${self.format === 'original' ? 'r2g-pill-active' : ''}">
-                      <input type="radio" name="r2g_inline_fmt" value="original" ${self.format === 'original' ? 'checked' : ''}>
-                      <span>Original</span>
-                    </label>
-                  </div>
-                </div>
-                <div class="r2g-inline-field r2g-quality-wrap" style="${self.compress === 0 ? 'display:none;' : ''}">
-                  <label>Quality: <span class="r2g-quality-val">${self.quality}%</span></label>
-                  <input type="range" class="r2g-quality-slider" min="60" max="100" value="${self.quality}" style="max-width:180px;">
-                </div>
-              </div>
+              <span class="r2g-engine-badge">${engineLabel}</span>
             </div>
-          `;
-          $uploadUi.find('.upload-instructions').first().before(cardHtml);
-        }
-
-        // 3. Inject Toolbar on media-new.php or upload.php
-        const $standaloneTarget = $('#wp-media-grid, .upload-php #wpbody-content .wrap, .media-new-php #wpbody-content .wrap, #async-upload-wrap').first();
-        if ($standaloneTarget.length && !$('#r2g-upload-toolbar').length && !$('.media-modal').length) {
-          const barHtml = `
-            <div id="r2g-upload-toolbar" class="r2g-upload-bar">
-              <span class="r2g-upload-bar-title">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9Z"/></svg>
-                Cloudflare R2 Upload Settings:
-              </span>
-              <div class="r2g-upload-bar-item">
-                <label>Preset:</label>
-                <select class="r2g-control-preset">
+            <div class="r2g-toolbar-content">
+              <div class="r2g-toolbar-col r2g-col-preset">
+                <label class="r2g-bar-label">Preset:</label>
+                <select class="r2g-control-preset r2g-select">
                   ${presetOptionsHtml}
                 </select>
               </div>
-              <div class="r2g-upload-bar-item">
-                <div class="r2g-format-group" style="display:inline-flex; gap:3px;">
-                  <button type="button" class="button button-small r2g-format-btn ${self.format === 'webp' ? 'r2g-btn-active' : ''}" data-format="webp">WebP</button>
-                  <button type="button" class="button button-small r2g-format-btn ${self.format === 'jpg' ? 'r2g-btn-active' : ''}" data-format="jpg">JPG</button>
-                  <button type="button" class="button button-small r2g-format-btn ${self.format === 'png' ? 'r2g-btn-active' : ''}" data-format="png">PNG</button>
-                  <button type="button" class="button button-small r2g-format-btn ${self.format === 'original' ? 'r2g-btn-active' : ''}" data-format="original">Original</button>
+              <div class="r2g-toolbar-col r2g-col-format">
+                <label class="r2g-bar-label">Target Format:</label>
+                <div class="r2g-format-group">
+                  <button type="button" class="r2g-format-btn ${self.format === 'webp' ? 'r2g-btn-active' : ''}" data-format="webp">WebP</button>
+                  <button type="button" class="r2g-format-btn ${self.format === 'jpg' ? 'r2g-btn-active' : ''}" data-format="jpg">JPG</button>
+                  <button type="button" class="r2g-format-btn ${self.format === 'png' ? 'r2g-btn-active' : ''}" data-format="png">PNG</button>
+                  <button type="button" class="r2g-format-btn ${self.format === 'original' ? 'r2g-btn-active' : ''}" data-format="original">Original</button>
                 </div>
               </div>
-              <div class="r2g-upload-bar-item r2g-quality-wrap" style="${self.compress === 0 ? 'display:none;' : ''}">
-                <label>Quality:</label>
-                <input type="range" class="r2g-quality-slider" min="60" max="100" value="${self.quality}" style="width:100px;">
-                <span class="r2g-quality-val" style="font-weight:600; font-size:12px;">${self.quality}%</span>
+              <div class="r2g-toolbar-col r2g-col-quality r2g-quality-wrap" style="${self.compress === 0 ? 'display:none;' : ''}">
+                <label class="r2g-bar-label">Quality:</label>
+                <div class="r2g-slider-box">
+                  <input type="range" class="r2g-quality-slider" min="50" max="100" value="${self.quality}">
+                  <span class="r2g-quality-badge r2g-quality-val">${self.quality}%</span>
+                </div>
               </div>
             </div>
-          `;
+          </div>
+        `;
+
+        // 1. In Media Modal: inject inside .uploader-inline .upload-ui above .upload-instructions
+        const $uploadUi = $('.media-modal .uploader-inline .upload-ui, .uploader-inline .upload-ui').first();
+        if ($uploadUi.length) {
+          $uploadUi.find('.upload-instructions').first().before(toolbarHtml);
+          self.syncAllControls();
+          return;
+        }
+
+        // 2. Standalone upload screens (media-new.php or upload.php)
+        const $standaloneTarget = $('#drag-drop-area, #async-upload-wrap, .upload-php #wpbody-content .wrap, .media-new-php #wpbody-content .wrap').first();
+        if ($standaloneTarget.length) {
           if ($('#drag-drop-area').length) {
-            $('#drag-drop-area').before(barHtml);
+            $('#drag-drop-area').before(toolbarHtml);
           } else {
-            $standaloneTarget.find('h1').first().after(barHtml);
+            $standaloneTarget.find('h1').first().after(toolbarHtml);
           }
+          self.syncAllControls();
         }
       };
 
       $(document).ready(checkAndInject);
       $(document).on('uploaderReady', checkAndInject);
-
-      // Periodically check for modal opening (e.g. user clicks "Add Media")
-      setInterval(checkAndInject, 500);
+      setInterval(checkAndInject, 600);
     },
 
     /**
-     * Bind 2-way event syncing for all injected controls
+     * Bind 2-way event syncing for controls
      */
     bindControlEvents: function() {
       const self = this;
@@ -275,29 +292,16 @@
       $(document).on('click', '.r2g-format-btn', function(e) {
         e.preventDefault();
         const fmt = $(this).data('format');
-        self.format = fmt;
-        self.preset = 'custom';
-        self.syncAllControls();
+        self.setFormat(fmt);
       });
 
-      // Radio pills change
-      $(document).on('change', 'input[name="r2g_inline_fmt"]', function() {
-        self.format = $(this).val();
-        self.preset = 'custom';
-        self.syncAllControls();
+      // Quality sliders: input fires live during drag without interrupting touch tracking
+      $(document).on('input', '.r2g-quality-slider', function() {
+        self.setQuality($(this).val(), this);
       });
 
-      $(document).on('change', 'input[name="r2g_inline_cmp"]', function() {
-        self.compress = parseInt($(this).val(), 10);
-        self.preset = 'custom';
-        self.syncAllControls();
-      });
-
-      // Quality sliders
-      $(document).on('input change', '.r2g-quality-slider', function() {
-        self.quality = parseInt($(this).val(), 10);
-        self.preset = 'custom';
-        self.syncAllControls();
+      $(document).on('change', '.r2g-quality-slider', function() {
+        self.syncCookies();
       });
     },
 
@@ -350,40 +354,68 @@
 
     /**
      * Intercept standard WordPress Media Uploader (Plupload)
-     * Attaches params safely on BeforeUpload WITHOUT halting the queue
+     * Attaches params safely on FilesAdded and BeforeUpload WITHOUT halting the queue
      */
     hookPlupload: function() {
       const self = this;
-      if (this._pluploadHooked) return;
-      this._pluploadHooked = true;
+
+      const bindToUploader = function(uploader) {
+        if (!uploader || uploader._r2g_bound) return;
+        uploader._r2g_bound = true;
+        self.currentUploader = uploader;
+
+        const setParams = function(up) {
+          up.settings.multipart_params = up.settings.multipart_params || {};
+          up.settings.multipart_params['r2g_preset'] = self.preset;
+          up.settings.multipart_params['r2g_format'] = self.format;
+          up.settings.multipart_params['r2g_compress'] = self.compress;
+          up.settings.multipart_params['r2g_quality'] = self.quality;
+          up.settings.multipart_params['r2g_max_width'] = self.maxWidth;
+          self.syncCookies();
+        };
+
+        uploader.bind('FilesAdded', setParams);
+        uploader.bind('BeforeUpload', setParams);
+      };
 
       const patchUploader = function() {
         if (typeof wp !== 'undefined' && wp.Uploader && wp.Uploader.prototype) {
-          if (wp.Uploader._r2g_patched) return;
-          wp.Uploader._r2g_patched = true;
-
-          const originalInit = wp.Uploader.prototype.init;
-          wp.Uploader.prototype.init = function() {
-            originalInit.apply(this, arguments);
-            const uploader = this.uploader;
-            if (!uploader || uploader._r2g_bound) return;
-            uploader._r2g_bound = true;
-
-            // Attach latest upload parameters to every request right before upload begins
-            uploader.bind('BeforeUpload', function(up, file) {
-              up.settings.multipart_params = up.settings.multipart_params || {};
-              up.settings.multipart_params['r2g_preset'] = self.preset;
-              up.settings.multipart_params['r2g_format'] = self.format;
-              up.settings.multipart_params['r2g_compress'] = self.compress;
-              up.settings.multipart_params['r2g_quality'] = self.quality;
-              up.settings.multipart_params['r2g_max_width'] = self.maxWidth;
-            });
-          };
+          if (!wp.Uploader._r2g_patched) {
+            wp.Uploader._r2g_patched = true;
+            const originalInit = wp.Uploader.prototype.init;
+            wp.Uploader.prototype.init = function() {
+              originalInit.apply(this, arguments);
+              bindToUploader(this.uploader);
+            };
+          }
+        }
+        if (typeof window.wp !== 'undefined' && wp.media && wp.media.featuredImage && wp.media.featuredImage.frame) {
+          const frame = wp.media.featuredImage.frame();
+          if (frame && frame.uploader && frame.uploader.uploader) {
+            bindToUploader(frame.uploader.uploader);
+          }
+        }
+        if (typeof window.uploader !== 'undefined' && window.uploader.bind) {
+          bindToUploader(window.uploader);
         }
       };
 
       patchUploader();
-      $(document).on('uploaderReady', patchUploader);
+      $(document).on('uploaderReady', function(e, up) {
+        bindToUploader(up);
+      });
+      setInterval(patchUploader, 1000);
+
+      // Global failsafe for async-upload.php
+      $(document).ajaxSend(function(event, xhr, settings) {
+        if (settings && settings.url && settings.url.indexOf('async-upload.php') !== -1) {
+          xhr.setRequestHeader('X-R2G-Preset', self.preset);
+          xhr.setRequestHeader('X-R2G-Format', self.format);
+          xhr.setRequestHeader('X-R2G-Quality', self.quality);
+          xhr.setRequestHeader('X-R2G-Compress', self.compress);
+          xhr.setRequestHeader('X-R2G-Max-Width', self.maxWidth);
+        }
+      });
     },
 
     /**
@@ -395,7 +427,6 @@
         const form = this;
         self.syncCookies();
 
-        // Add hidden inputs for direct form submit
         const fields = {
           'r2g_preset': self.preset,
           'r2g_format': self.format,

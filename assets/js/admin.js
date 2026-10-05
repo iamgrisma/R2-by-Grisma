@@ -435,12 +435,39 @@
       }
     });
 
+    $('input[name="r2g_compress_format"]').on('change', function() {
+      const fmt = $(this).val();
+      const currentQuality = parseInt($('#r2g_compress_quality').val(), 10);
+      let matched = 'custom';
+      const presets = window.r2g_compress_config?.presets || {};
+      for (const [key, p] of Object.entries(presets)) {
+        if (key === 'custom') continue;
+        if (p.format === fmt && parseInt(p.quality, 10) === currentQuality) {
+          matched = key;
+          break;
+        }
+      }
+      if (matched === 'custom') {
+        if (fmt === 'webp') matched = 'webp_balanced';
+        else if (fmt === 'jpg') matched = 'jpeg_balanced';
+        else if (fmt === 'original') matched = 'original_compressed';
+      }
+      $('#r2g_active_preset').val(matched);
+      if (presets[matched]) {
+        $('#r2g-preset-desc').text(presets[matched].description || '');
+      }
+    });
+
     // Quality slider and number input 2-way sync
     $('#r2g_compress_quality_slider').on('input', function() {
-      $('#r2g_compress_quality').val($(this).val());
+      const val = $(this).val();
+      $('#r2g_compress_quality').val(val);
+      $('#r2g_active_preset').val('custom');
     });
     $('#r2g_compress_quality').on('input', function() {
-      $('#r2g_compress_quality_slider').val($(this).val());
+      const val = $(this).val();
+      $('#r2g_compress_quality_slider').val(val);
+      $('#r2g_active_preset').val('custom');
     });
 
     // 9. Thumbnail Auto-healing: Fallback from broken thumbnail size to full CDN image

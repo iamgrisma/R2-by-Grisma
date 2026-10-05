@@ -238,7 +238,105 @@ class R2G_Media_Handler {
     }
 
     /**
-     * Helper to read upload preference (from POST, HTTP Header, Cookie, or Admin default)
+     * Cache of files already processed during current upload request
+     *
+     * @var array
+     */
+    private static $processed_files = array();
+
+    /**
+     * Resolve effective upload preferences with strict hierarchy:
+     * 1. Explicit POST parameters (e.g. from Plupload / FormData / AJAX)
+     * 2. HTTP headers (e.g. from REST API / apiFetch)
+     * 3. Preset defaults (e.g. jpeg_high -> format: 'jpg', quality: 90)
+     * 4. Session cookie ONLY if preset is explicitly 'custom'
+     *
+     * This guarantees a user selecting 'JPEG High Quality' or clicking 'JPG'
+     * is NEVER overridden by a stale cookie set to 'webp'.
+     *
+     * @return array
+     */
+    public static function get_effective_upload_options() {
+        $presets = self::get_presets();
+        $preset_key = '';
+
+        if (!empty($_POST['r2g_preset'])) {
+            $preset_key = sanitize_text_field(wp_unslash($_POST['r2g_preset']));
+        } elseif (!empty($_SERVER['HTTP_X_R2G_PRESET'])) {
+            $preset_key = sanitize_text_field(wp_unslash($_SERVER['HTTP_X_R2G_PRESET']));
+        } elseif (!empty($_COOKIE['r2g_preset'])) {
+            $preset_key = sanitize_text_field(wp_unslash($_COOKIE['r2g_preset']));
+        }
+
+        if (empty($preset_key) || !isset($presets[$preset_key])) {
+            $preset_key = get_option('r2g_active_preset', 'webp_balanced');
+            if (!isset($presets[$preset_key])) {
+                $preset_key = 'webp_balanced';
+            }
+        }
+
+        $preset_def = $presets[$preset_key];
+
+        // Format resolution:
+        $format = '';
+        if (!empty($_POST['r2g_format'])) {
+            $format = sanitize_text_field(wp_unslash($_POST['r2g_format']));
+        } elseif (!empty($_SERVER['HTTP_X_R2G_FORMAT'])) {
+            $format = sanitize_text_field(wp_unslash($_SERVER['HTTP_X_R2G_FORMAT']));
+        } elseif ($preset_key === 'custom' && !empty($_COOKIE['r2g_format'])) {
+            $format = sanitize_text_field(wp_unslash($_COOKIE['r2g_format']));
+        } else {
+            $format = $preset_def['format'];
+        }
+
+        $format = strtolower($format);
+        if ($format === 'jpeg') {
+            $format = 'jpg';
+        }
+
+        // Quality resolution:
+        $quality = 82;
+        if (isset($_POST['r2g_quality']) && $_POST['r2g_quality'] !== '') {
+            $quality = (int)$_POST['r2g_quality'];
+        } elseif (isset($_SERVER['HTTP_X_R2G_QUALITY']) && $_SERVER['HTTP_X_R2G_QUALITY'] !== '') {
+            $quality = (int)$_SERVER['HTTP_X_R2G_QUALITY'];
+        } elseif ($preset_key === 'custom' && isset($_COOKIE['r2g_quality']) && $_COOKIE['r2g_quality'] !== '') {
+            $quality = (int)$_COOKIE['r2g_quality'];
+        } else {
+            $quality = (int)$preset_def['quality'];
+        }
+        $quality = max(50, min(100, $quality));
+
+        // Compress resolution:
+        $compress = $preset_def['compress'];
+        if (isset($_POST['r2g_compress']) && $_POST['r2g_compress'] !== '') {
+            $compress = (int)$_POST['r2g_compress'];
+        } elseif (isset($_SERVER['HTTP_X_R2G_COMPRESS']) && $_SERVER['HTTP_X_R2G_COMPRESS'] !== '') {
+            $compress = (int)$_SERVER['HTTP_X_R2G_COMPRESS'];
+        }
+
+        // Max width resolution:
+        $max_width = $preset_def['max_width'];
+        if (isset($_POST['r2g_max_width']) && $_POST['r2g_max_width'] !== '') {
+            $max_width = (int)$_POST['r2g_max_width'];
+        } elseif (isset($_SERVER['HTTP_X_R2G_MAX_WIDTH']) && $_SERVER['HTTP_X_R2G_MAX_WIDTH'] !== '') {
+            $max_width = (int)$_SERVER['HTTP_X_R2G_MAX_WIDTH'];
+        }
+
+        $engine = get_option('r2g_compress_engine', 'server');
+
+        return array(
+            'preset'    => $preset_key,
+            'format'    => $format,
+            'quality'   => $quality,
+            'compress'  => (bool)$compress,
+            'max_width' => $max_width,
+            'engine'    => $engine,
+        );
+    }
+
+    /**
+     * Helper to read upload preference with fallback
      *
      * @param string $key
      * @param mixed $default
@@ -282,33 +380,22 @@ class R2G_Media_Handler {
             return $upload;
         }
 
-        // Check if an explicit preset was passed
-        $preset_key = self::get_upload_pref('r2g_preset', get_option('r2g_active_preset', 'webp_balanced'));
-        $presets = self::get_presets();
-        $preset_def = $presets[$preset_key] ?? null;
-
-        // Default fallbacks from preset or admin options
-        $default_format   = $preset_def ? $preset_def['format'] : get_option('r2g_compress_format', 'webp');
-        $default_compress = $preset_def ? $preset_def['compress'] : get_option('r2g_compress_enabled', 1);
-        $default_quality  = $preset_def ? $preset_def['quality'] : get_option('r2g_compress_quality', 82);
-        $default_max_w    = $preset_def ? $preset_def['max_width'] : get_option('r2g_max_width', 1920);
-
-        // Read active preferences (Upload-Time override via POST/Header/Cookie or Presets)
-        $compress_enabled = (int) self::get_upload_pref('r2g_compress', $default_compress);
-        $format           = strtolower(self::get_upload_pref('r2g_format', $default_format));
-        $quality          = (int) self::get_upload_pref('r2g_quality', $default_quality);
-        $max_width        = (int) self::get_upload_pref('r2g_max_width', $default_max_w);
+        $opts = self::get_effective_upload_options();
 
         $opt_res = R2G_Optimizer::optimize_local_file($file_path, array(
-            'format'    => $format,
-            'quality'   => $quality,
-            'max_width' => $max_width,
-            'compress'  => (bool)$compress_enabled,
+            'format'    => $opts['format'],
+            'quality'   => $opts['quality'],
+            'max_width' => $opts['max_width'],
+            'compress'  => $opts['compress'],
+            'engine'    => $opts['engine'],
         ));
 
         if ($opt_res['success'] && !empty($opt_res['file_path'])) {
             $new_file = $opt_res['file_path'];
             $upload['file'] = $new_file;
+
+            self::$processed_files[$new_file]  = $opts;
+            self::$processed_files[$file_path] = $opts;
 
             if (!empty($opt_res['mime'])) {
                 $upload['type'] = $opt_res['mime'];
@@ -354,44 +441,25 @@ class R2G_Media_Handler {
             $metadata['image_meta']['caption'] = '';
         }
 
-        // Failsafe check: if wp_handle_upload was bypassed and format differs
-        $preset_key = self::get_upload_pref('r2g_preset', get_option('r2g_active_preset', 'webp_balanced'));
-        $presets = self::get_presets();
-        $preset_def = $presets[$preset_key] ?? null;
-        $default_format = $preset_def ? $preset_def['format'] : get_option('r2g_compress_format', 'webp');
+        // Check if master file was already optimized and converted in on_handle_upload
+        $already_processed = isset(self::$processed_files[$file_path]);
 
-        $format = strtolower(self::get_upload_pref('r2g_format', $default_format));
-        $current_ext = strtolower(pathinfo($file_path, PATHINFO_EXTENSION));
-        if ($current_ext === 'jpeg') {
-            $current_ext = 'jpg';
-        }
-
-        $needs_opt = false;
-        if ($format === 'webp' && $current_ext !== 'webp' && R2G_Optimizer::can_generate_webp()) {
-            $needs_opt = true;
-        } elseif ($format === 'jpg' && $current_ext !== 'jpg') {
-            $needs_opt = true;
-        } elseif ($format === 'png' && $current_ext !== 'png') {
-            $needs_opt = true;
-        }
-
-        if ($needs_opt) {
-            $compress_enabled = (int) self::get_upload_pref('r2g_compress', get_option('r2g_compress_enabled', 1));
-            $quality          = (int) self::get_upload_pref('r2g_quality', get_option('r2g_compress_quality', 82));
-            $max_width        = (int) self::get_upload_pref('r2g_max_width', get_option('r2g_max_width', 1920));
-
+        if (!$already_processed) {
+            // Sideloaded or direct upload that bypassed on_handle_upload
+            $opts = self::get_effective_upload_options();
             $opt_res = R2G_Optimizer::optimize_local_file($file_path, array(
-                'format'    => $format,
-                'quality'   => $quality,
-                'max_width' => $max_width,
-                'compress'  => (bool)$compress_enabled,
+                'format'    => $opts['format'],
+                'quality'   => $opts['quality'],
+                'max_width' => $opts['max_width'],
+                'compress'  => $opts['compress'],
+                'engine'    => $opts['engine'],
             ));
 
             if ($opt_res['success'] && !empty($opt_res['file_path']) && $opt_res['file_path'] !== $file_path) {
                 update_attached_file($attachment_id, $opt_res['file_path']);
                 $file_path = $opt_res['file_path'];
                 $metadata['file'] = _wp_relative_upload_path($file_path);
-                $target_mime = !empty($opt_res['mime']) ? $opt_res['mime'] : 'image/' . ($format === 'jpg' ? 'jpeg' : $format);
+                $target_mime = !empty($opt_res['mime']) ? $opt_res['mime'] : 'image/' . ($opts['format'] === 'jpg' ? 'jpeg' : $opts['format']);
                 wp_update_post(array(
                     'ID'             => $attachment_id,
                     'post_mime_type' => $target_mime,
