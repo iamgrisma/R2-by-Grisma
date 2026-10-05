@@ -788,13 +788,10 @@ class R2G_Admin {
                                     $is_current = ($rel_ver === R2G_VERSION);
                                     $is_newer   = version_compare(R2G_VERSION, $rel_ver, '<');
                                     $is_older   = version_compare(R2G_VERSION, $rel_ver, '>');
-                                    $rollback_nonce = wp_create_nonce('r2g_rollback_' . $rel_ver);
-                                    $target_action_url = add_query_arg(array(
-                                        'action'             => 'upgrade-plugin',
-                                        'plugin'             => urlencode($plugin_file),
-                                        'r2g_target_version' => urlencode($rel_ver),
-                                        '_wpnonce'           => $rollback_nonce,
-                                    ), admin_url('update.php'));
+                                    $target_action_url = wp_nonce_url(
+                                        admin_url('update.php?action=upgrade-plugin&plugin=' . urlencode($plugin_file) . '&r2g_target_version=' . urlencode($rel_ver)),
+                                        'upgrade-plugin_' . $plugin_file
+                                    );
                                     ?>
                                     <tr>
                                         <td>

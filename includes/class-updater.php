@@ -150,7 +150,7 @@ class R2G_Updater {
         }
 
         $tag = ltrim($data['tag_name'], 'vV');
-        $package_url = $data['zipball_url'] ?? '';
+        $package_url = sprintf('https://github.com/%s/%s/releases/download/%s/r2-by-grisma.zip', self::GITHUB_OWNER, self::GITHUB_REPO, $data['tag_name']);
 
         // Prioritize custom built r2-by-grisma.zip in release assets
         if (!empty($data['assets']) && is_array($data['assets'])) {
@@ -169,6 +169,9 @@ class R2G_Updater {
                     }
                 }
             }
+        }
+        if (empty($package_url)) {
+            $package_url = $data['zipball_url'] ?? '';
         }
 
         $result = array(
@@ -230,7 +233,7 @@ class R2G_Updater {
             }
 
             $tag = ltrim($rel['tag_name'], 'vV');
-            $package_url = $rel['zipball_url'] ?? '';
+            $package_url = sprintf('https://github.com/%s/%s/releases/download/%s/r2-by-grisma.zip', self::GITHUB_OWNER, self::GITHUB_REPO, $rel['tag_name']);
 
             if (!empty($rel['assets']) && is_array($rel['assets'])) {
                 foreach ($rel['assets'] as $asset) {
@@ -239,6 +242,9 @@ class R2G_Updater {
                         break;
                     }
                 }
+            }
+            if (empty($package_url)) {
+                $package_url = $rel['zipball_url'] ?? '';
             }
 
             $releases[] = array(
@@ -315,22 +321,60 @@ class R2G_Updater {
         $is_target = false;
         if (!empty($hook_extra['plugin']) && strpos($hook_extra['plugin'], self::PLUGIN_SLUG) !== false) {
             $is_target = true;
-        } elseif ($wp_filesystem->exists($source . '/r2-by-grisma.php')) {
+        }
+
+        $proper_folder_name = self::PLUGIN_SLUG;
+        $new_source = trailingslashit($remote_source) . $proper_folder_name . '/';
+
+        // Check if r2-by-grisma.php exists directly in $source
+        if ($wp_filesystem->exists(trailingslashit($source) . 'r2-by-grisma.php')) {
             $is_target = true;
+            $actual_source = $source;
+        } else {
+            // Check subdirectories inside $source (handles GitHub repo zipballs or nested zips)
+            $actual_source = null;
+            $dir_list = $wp_filesystem->dirlist($source);
+            if (!empty($dir_list) && is_array($dir_list)) {
+                foreach ($dir_list as $entry) {
+                    if (!empty($entry['type']) && $entry['type'] === 'd') {
+                        $candidate = trailingslashit($source) . $entry['name'];
+                        if ($wp_filesystem->exists($candidate . '/r2-by-grisma.php')) {
+                            $is_target = true;
+                            $actual_source = $candidate;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (!$actual_source) {
+                $actual_source = $source;
+            }
         }
 
         if (!$is_target) {
             return $source;
         }
 
-        $proper_folder_name = self::PLUGIN_SLUG;
-        $new_source = trailingslashit($remote_source) . $proper_folder_name . '/';
+        // If actual source already matches target path exactly
+        if (untrailingslashit($actual_source) === untrailingslashit($new_source)) {
+            return $new_source;
+        }
 
-        if (untrailingslashit($source) !== untrailingslashit($new_source)) {
-            $move_result = $wp_filesystem->move($source, $new_source);
-            if ($move_result) {
-                return $new_source;
-            }
+        // Remove existing target directory in temporary remote_source if it exists
+        if ($wp_filesystem->exists($new_source)) {
+            $wp_filesystem->delete($new_source, true);
+        }
+
+        // Move to the exact plugin slug folder
+        $moved = $wp_filesystem->move($actual_source, $new_source, true);
+        if ($moved) {
+            return $new_source;
+        }
+
+        // Fallback: Copy and delete if move failed across filesystem boundaries
+        if ($wp_filesystem->copy_dir($actual_source, $new_source)) {
+            $wp_filesystem->delete($actual_source, true);
+            return $new_source;
         }
 
         return $source;
@@ -344,17 +388,24 @@ class R2G_Updater {
      */
     public function filter_upgrader_package_options($options) {
         if (!empty($_GET['r2g_target_version']) && !empty($_GET['plugin']) && strpos($_GET['plugin'], self::PLUGIN_SLUG) !== false) {
-            check_admin_referer('r2g_rollback_' . sanitize_text_field($_GET['r2g_target_version']));
-
             $target_version = sanitize_text_field($_GET['r2g_target_version']);
-            $releases = $this->get_all_releases();
+            $tag = (strpos($target_version, 'v') === 0) ? $target_version : 'v' . $target_version;
 
-            foreach ($releases as $rel) {
-                if ($rel['version'] === $target_version && !empty($rel['package'])) {
-                    $options['package'] = $rel['package'];
-                    break;
+            // Direct release asset URL - zero GitHub API quota consumption
+            $package_url = sprintf('https://github.com/%s/%s/releases/download/%s/r2-by-grisma.zip', self::GITHUB_OWNER, self::GITHUB_REPO, $tag);
+
+            // Check if cached release metadata has custom package URL
+            $releases = $this->get_all_releases();
+            if (!empty($releases) && is_array($releases)) {
+                foreach ($releases as $rel) {
+                    if ($rel['version'] === $target_version && !empty($rel['package'])) {
+                        $package_url = $rel['package'];
+                        break;
+                    }
                 }
             }
+
+            $options['package'] = $package_url;
         }
 
         return $options;
