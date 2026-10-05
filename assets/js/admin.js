@@ -243,6 +243,52 @@
       }
     });
 
+    // Toggle Re-compress options
+    $(document).on('click', '.r2g-link-toggle-recompress', function(e) {
+      e.preventDefault();
+      $(this).next('.r2g-recompress-opts').slideToggle(120);
+    });
+
+    // Re-compress action from Media Library column
+    $(document).on('click', '.r2g-btn-recompress', function(e) {
+      e.preventDefault();
+      const $btn = $(this);
+      const id = $btn.data('id');
+      const engine = $btn.data('engine') || 'server';
+      const $cell = $('#r2g-compress-cell-' + id);
+
+      const origText = $btn.text();
+      $btn.prop('disabled', true).text('...');
+
+      $.ajax({
+        url: ajaxurl,
+        type: 'POST',
+        dataType: 'json',
+        data: {
+          action: 'r2g_recompress_attachment',
+          id: id,
+          engine: engine,
+          format: 'webp',
+          nonce: nonce,
+        },
+        success: function(res) {
+          if (res.success) {
+            $cell.html(
+              '<span class="r2g-badge r2g-badge-both" style="margin-bottom:4px;">✓ Optimal (' + (res.data.format || 'WEBP') + ')</span>' +
+              '<div style="font-size:11px; color:#059669; font-weight:600; margin-top:2px;">' + (res.data.message || 'Optimized!') + '</div>'
+            );
+          } else {
+            alert(res.data?.message || 'Compression failed.');
+            $btn.prop('disabled', false).text(origText);
+          }
+        },
+        error: function(xhr, status, error) {
+          alert('Network request error: ' + error);
+          $btn.prop('disabled', false).text(origText);
+        }
+      });
+    });
+
     // 6. Bulk Sync Engine
     let syncPaused = false;
     let syncCancelled = false;

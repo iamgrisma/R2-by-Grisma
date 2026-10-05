@@ -182,14 +182,21 @@ class R2G_Optimizer {
             @unlink($file_path);
         }
 
+        $resmush_result = null;
+
         // If reSmush.it engine is selected, attempt reSmush compression with automatic fallback
         if ($engine === 'resmush' && $compress && file_exists($final_path)) {
             $current_file_size = filesize($final_path);
             // reSmush.it limit: max 5MB (5242880 bytes)
             if ($current_file_size <= 5242880 && $current_file_size > 0) {
-                self::resmush_file($final_path, $quality);
+                $resmush_result = self::resmush_file($final_path, $quality);
+            } else {
+                $resmush_result = array(
+                    'success' => false,
+                    'status'  => 'exceeds_size',
+                    'message' => __('Image exceeds 5MB reSmush.it limit. Processed via Server GD/Imagick fallback.', 'r2-by-grisma'),
+                );
             }
-            // If > 5MB, GD/Imagick set_quality has already processed it safely as fallback!
         }
 
         $new_size = file_exists($final_path) ? filesize($final_path) : $original_size;
@@ -197,43 +204,52 @@ class R2G_Optimizer {
         $bytes_saved = max(0, $original_size - $new_size);
 
         return array(
-            'success'     => true,
-            'file_path'   => $final_path,
-            'mime'        => $saved['mime-type'] ?? ($target_mime ?: ''),
-            'width'       => $final_size['width'] ?? ($size['width'] ?? 0),
-            'height'      => $final_size['height'] ?? ($size['height'] ?? 0),
-            'bytes_saved' => $bytes_saved,
+            'success'        => true,
+            'file_path'      => $final_path,
+            'mime'           => $saved['mime-type'] ?? ($target_mime ?: ''),
+            'width'          => $final_size['width'] ?? ($size['width'] ?? 0),
+            'height'         => $final_size['height'] ?? ($size['height'] ?? 0),
+            'bytes_saved'    => $bytes_saved,
+            'resmush_result' => $resmush_result,
         );
     }
 
     /**
      * Compress an image using reSmush.it Free Web Service API
-     * Enforces a strict 15s timeout and 5MB max size.
-     * Returns true if successfully compressed to a smaller file, false on failure or fallback.
+     * Enforces a strict 15s timeout, 5MB max size, and required Referer/User-Agent headers.
+     * Returns detailed status array.
      *
      * @param string $file_path Absolute path to the file
      * @param int $quality Target quality 50-100
-     * @return bool
+     * @return array
      */
     public static function resmush_file($file_path, $quality = 82) {
         if (!file_exists($file_path) || !is_readable($file_path)) {
-            return false;
+            return array('success' => false, 'status' => 'missing_file', 'message' => __('Local file not found.', 'r2-by-grisma'));
         }
 
         $size = filesize($file_path);
         if ($size > 5242880 || $size === 0) {
-            return false; // Exceeds 5MB reSmush limit; fallback to GD/Imagick
+            return array('success' => false, 'status' => 'exceeds_size', 'message' => __('File exceeds 5MB reSmush limit.', 'r2-by-grisma'));
         }
 
         $ext = strtolower(pathinfo($file_path, PATHINFO_EXTENSION));
-        if (!in_array($ext, array('jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp'), true)) {
-            return false;
+        if ($ext === 'webp') {
+            return array(
+                'success' => false,
+                'status'  => 'unsupported_format',
+                'message' => __('reSmush.it API only supports JPG, PNG, GIF, BMP (not WebP). Processed via Server GD.', 'r2-by-grisma'),
+            );
+        }
+
+        if (!in_array($ext, array('jpg', 'jpeg', 'png', 'gif', 'bmp', 'tiff'), true)) {
+            return array('success' => false, 'status' => 'unsupported_format', 'message' => __('Format unsupported by reSmush.', 'r2-by-grisma'));
         }
 
         $boundary = wp_generate_password(24, false);
         $file_content = @file_get_contents($file_path);
         if ($file_content === false) {
-            return false;
+            return array('success' => false, 'status' => 'read_error', 'message' => __('Could not read image file.', 'r2-by-grisma'));
         }
 
         $payload = "--{$boundary}\r\n"
@@ -242,35 +258,68 @@ class R2G_Optimizer {
             . $file_content . "\r\n"
             . "--{$boundary}--\r\n";
 
-        $url = 'http://api.resmush.it/ws.php?qlty=' . max(50, min(100, $quality));
+        $url = 'https://api.resmush.it/ws.php?qlty=' . max(50, min(100, $quality));
+        $site_url = home_url();
         $response = wp_remote_post($url, array(
-            'timeout' => 15,
-            'headers' => array(
+            'timeout'    => 15,
+            'user-agent' => 'WordPress/' . get_bloginfo('version') . '; ' . $site_url,
+            'headers'    => array(
+                'Referer'      => $site_url,
                 'Content-Type' => "multipart/form-data; boundary={$boundary}",
             ),
-            'body'    => $payload,
+            'body'       => $payload,
         ));
 
-        if (is_wp_error($response) || wp_remote_retrieve_response_code($response) !== 200) {
-            return false; // Network error or API down; fallback to GD/Imagick
+        if (is_wp_error($response)) {
+            return array(
+                'success' => false,
+                'status'  => 'network_error',
+                'message' => sprintf(__('reSmush.it network error: %s. Using Server GD fallback.', 'r2-by-grisma'), $response->get_error_message()),
+            );
         }
 
-        $data = json_decode(wp_remote_retrieve_body($response), true);
+        $code = wp_remote_retrieve_response_code($response);
+        $raw_body = wp_remote_retrieve_body($response);
+        $data = json_decode($raw_body, true);
+
+        if ($code !== 200 || !empty($data['error'])) {
+            $err_msg = $data['error_long'] ?? ($data['message'] ?? 'API error ' . $code);
+            return array(
+                'success' => false,
+                'status'  => 'api_error',
+                'message' => sprintf(__('reSmush.it returned: %s. Using Server GD fallback.', 'r2-by-grisma'), $err_msg),
+            );
+        }
+
         if (empty($data['dest'])) {
-            return false;
+            return array('success' => false, 'status' => 'no_dest', 'message' => __('No destination returned by reSmush.', 'r2-by-grisma'));
         }
 
-        $compressed_img = wp_remote_get($data['dest'], array('timeout' => 15));
+        $compressed_img = wp_remote_get($data['dest'], array(
+            'timeout'    => 15,
+            'user-agent' => 'WordPress/' . get_bloginfo('version') . '; ' . $site_url,
+            'headers'    => array('Referer' => $site_url),
+        ));
+
         if (is_wp_error($compressed_img) || wp_remote_retrieve_response_code($compressed_img) !== 200) {
-            return false;
+            return array('success' => false, 'status' => 'download_error', 'message' => __('Failed to download reSmush optimized image.', 'r2-by-grisma'));
         }
 
         $new_bytes = wp_remote_retrieve_body($compressed_img);
         if (strlen($new_bytes) > 0 && strlen($new_bytes) < $size) {
             @file_put_contents($file_path, $new_bytes);
-            return true;
+            return array(
+                'success' => true,
+                'status'  => 'success',
+                'message' => sprintf(__('Optimized via reSmush.it API (-%d%% savings).', 'r2-by-grisma'), $data['percent'] ?? 0),
+                'percent' => (int)($data['percent'] ?? 0),
+            );
         }
 
-        return false;
+        return array(
+            'success' => false,
+            'status'  => 'already_optimal',
+            'message' => __('reSmush reported image is already optimal; Server GD copy preserved.', 'r2-by-grisma'),
+        );
     }
 }

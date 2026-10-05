@@ -29,9 +29,11 @@ class R2G_Media_Library {
             return;
         }
 
-        // Add Column
+        // Add Columns
         add_filter('manage_media_columns', array($this, 'add_location_column'));
         add_action('manage_media_custom_column', array($this, 'render_location_column'), 10, 2);
+        add_filter('manage_media_columns', array($this, 'add_compress_column'));
+        add_action('manage_media_custom_column', array($this, 'render_compress_column'), 10, 2);
 
         // Filter Dropdown in Media Library
         add_action('restrict_manage_posts', array($this, 'render_location_filter'));
@@ -54,6 +56,7 @@ class R2G_Media_Library {
         add_action('wp_ajax_r2g_delete_local_single', array($this, 'ajax_delete_local_single'));
         add_action('wp_ajax_r2g_delete_r2_single', array($this, 'ajax_delete_r2_single'));
         add_action('wp_ajax_r2g_convert_webp_single', array($this, 'ajax_convert_webp_single'));
+        add_action('wp_ajax_r2g_recompress_attachment', array($this, 'ajax_recompress_attachment'));
     }
 
     /**
@@ -65,6 +68,69 @@ class R2G_Media_Library {
     public function add_location_column($columns) {
         $columns['r2g_storage'] = esc_html__('R2 Cloud Storage', 'r2-by-grisma');
         return $columns;
+    }
+
+    /**
+     * Add "Optimization" column to Media Library
+     *
+     * @param array $columns
+     * @return array
+     */
+    public function add_compress_column($columns) {
+        $columns['r2g_compression'] = esc_html__('Optimization', 'r2-by-grisma');
+        return $columns;
+    }
+
+    /**
+     * Render Optimization Column
+     *
+     * @param string $column_name
+     * @param int $post_id
+     */
+    public function render_compress_column($column_name, $post_id) {
+        if ($column_name !== 'r2g_compression') {
+            return;
+        }
+
+        if (!wp_attachment_is_image($post_id)) {
+            echo '<span style="color:#94a3b8; font-size:12px;">—</span>';
+            return;
+        }
+
+        $mime = get_post_mime_type($post_id);
+        if (strpos($mime, 'svg') !== false) {
+            echo '<span style="color:#94a3b8; font-size:12px;">Vector (SVG)</span>';
+            return;
+        }
+
+        $file_path = get_attached_file($post_id);
+        $ext = strtolower(pathinfo($file_path ?: '', PATHINFO_EXTENSION));
+        $is_webp_or_avif = in_array($ext, array('webp', 'avif'), true) || in_array($mime, array('image/webp', 'image/avif'), true);
+        $is_optimized = (bool) get_post_meta($post_id, '_r2g_optimized', true);
+
+        echo '<div class="r2g-compress-cell" id="r2g-compress-cell-' . esc_attr($post_id) . '">';
+
+        if ($is_webp_or_avif || $is_optimized) {
+            $format_label = strtoupper($ext ?: 'WebP');
+            echo '<span class="r2g-badge r2g-badge-both" style="margin-bottom:4px;" title="' . esc_attr__('Optimized format with lightweight footprint', 'r2-by-grisma') . '">✓ Optimal (' . esc_html($format_label) . ')</span>';
+            echo '<div style="margin-top:4px;">
+                    <a href="#" class="r2g-link-toggle-recompress" data-id="' . esc_attr($post_id) . '" style="font-size:11px; color:#64748b; text-decoration:none;">' . esc_html__('Re-compress ↻', 'r2-by-grisma') . '</a>
+                    <div class="r2g-recompress-opts" style="display:none; margin-top:4px; gap:4px; flex-wrap:wrap;">
+                      <button type="button" class="button button-small r2g-btn-recompress" data-id="' . esc_attr($post_id) . '" data-engine="server" title="Compress using Server PHP GD">' . esc_html__('Server GD', 'r2-by-grisma') . '</button>
+                      <button type="button" class="button button-small r2g-btn-recompress" data-id="' . esc_attr($post_id) . '" data-engine="resmush" title="Compress using reSmush.it">' . esc_html__('reSmush', 'r2-by-grisma') . '</button>
+                      <button type="button" class="button button-small r2g-btn-recompress" data-id="' . esc_attr($post_id) . '" data-engine="browser" title="Compress locally in browser">' . esc_html__('Edge', 'r2-by-grisma') . '</button>
+                    </div>
+                  </div>';
+        } else {
+            echo '<span style="font-size:11px; font-weight:600; color:#b45309; display:block; margin-bottom:4px;">' . esc_html__('Uncompressed (' . strtoupper($ext) . ')', 'r2-by-grisma') . '</span>';
+            echo '<div class="r2g-recompress-opts" style="display:flex; gap:4px; flex-wrap:wrap;">
+                    <button type="button" class="button button-small r2g-btn-recompress" data-id="' . esc_attr($post_id) . '" data-engine="server" title="Compress to WebP via Server GD">' . esc_html__('Server GD', 'r2-by-grisma') . '</button>
+                    <button type="button" class="button button-small r2g-btn-recompress" data-id="' . esc_attr($post_id) . '" data-engine="resmush" title="Compress via reSmush.it">' . esc_html__('reSmush', 'r2-by-grisma') . '</button>
+                    <button type="button" class="button button-small r2g-btn-recompress" data-id="' . esc_attr($post_id) . '" data-engine="browser" title="Compress in Browser">' . esc_html__('Edge', 'r2-by-grisma') . '</button>
+                  </div>';
+        }
+
+        echo '</div>';
     }
 
     /**
@@ -546,5 +612,108 @@ class R2G_Media_Library {
         }
 
         wp_send_json_error(array('message' => 'Failed to convert image to WebP.'));
+    }
+
+    /**
+     * Ajax: On-demand re-compression from Media Library table
+     * Compresses with chosen engine, updates metadata, and pushes new WebP to R2
+     */
+    public function ajax_recompress_attachment() {
+        check_ajax_referer('r2g_admin_nonce', 'nonce');
+        if (!current_user_can('upload_files')) {
+            wp_send_json_error(array('message' => 'Unauthorized'));
+        }
+
+        $id = (int)($_POST['id'] ?? 0);
+        if ($id <= 0) {
+            wp_send_json_error(array('message' => 'Invalid attachment ID'));
+        }
+
+        $engine = sanitize_text_field($_POST['engine'] ?? 'server');
+        $format = sanitize_text_field($_POST['format'] ?? 'webp');
+        $quality = (int) ($_POST['quality'] ?? get_option('r2g_compress_quality', 82));
+        $max_width = (int) get_option('r2g_max_width', 1920);
+
+        // Check if browser uploaded pre-compressed blob:
+        if ($engine === 'browser' && !empty($_FILES['image']) && !empty($_FILES['image']['tmp_name'])) {
+            $tmp = $_FILES['image']['tmp_name'];
+            $file_path = get_attached_file($id);
+            if (!$file_path) {
+                $uploads = wp_upload_dir();
+                $file_path = $uploads['path'] . '/' . sanitize_file_name($_FILES['image']['name'] ?? 'image.webp');
+            }
+            $target_webp = preg_replace('/\.[^.]+$/', '.webp', $file_path);
+            @copy($tmp, $target_webp);
+            update_attached_file($id, $target_webp);
+            wp_update_post(array('ID' => $id, 'post_mime_type' => 'image/webp'));
+
+            require_once ABSPATH . 'wp-admin/includes/image.php';
+            $metadata = wp_generate_attachment_metadata($id, $target_webp);
+            wp_update_attachment_metadata($id, $metadata);
+            update_post_meta($id, '_r2g_optimized', 1);
+
+            R2G_Media_Handler::sync_attachment_to_r2($id, true, $metadata);
+
+            $rewriter = class_exists('R2G_URL_Rewriter') ? R2G_URL_Rewriter::instance() : null;
+            $new_url = $rewriter ? $rewriter->rewrite_url(wp_get_attachment_url($id)) : wp_get_attachment_url($id);
+
+            wp_send_json_success(array(
+                'message' => esc_html__('Compressed in Browser Edge and updated on Cloudflare R2!', 'r2-by-grisma'),
+                'url'     => $new_url,
+                'format'  => 'WEBP',
+            ));
+        }
+
+        $file_path = get_attached_file($id);
+        if (!$file_path || !file_exists($file_path)) {
+            R2G_Media_Handler::download_from_r2_to_local($id);
+            $file_path = get_attached_file($id);
+        }
+
+        if (!$file_path || !file_exists($file_path)) {
+            wp_send_json_error(array('message' => 'File not found on server or R2.'));
+        }
+
+        $opt_res = R2G_Optimizer::optimize_local_file($file_path, array(
+            'format'    => $format,
+            'quality'   => $quality,
+            'max_width' => $max_width,
+            'compress'  => true,
+            'engine'    => $engine,
+        ));
+
+        if ($opt_res['success'] && !empty($opt_res['file_path'])) {
+            $new_file = $opt_res['file_path'];
+            update_attached_file($id, $new_file);
+            $mime = !empty($opt_res['mime']) ? $opt_res['mime'] : 'image/' . ($format === 'jpg' ? 'jpeg' : $format);
+            wp_update_post(array(
+                'ID'             => $id,
+                'post_mime_type' => $mime,
+            ));
+
+            require_once ABSPATH . 'wp-admin/includes/image.php';
+            $metadata = wp_generate_attachment_metadata($id, $new_file);
+            wp_update_attachment_metadata($id, $metadata);
+            update_post_meta($id, '_r2g_optimized', 1);
+
+            // Re-upload to R2 (overriding existing R2 copy)
+            R2G_Media_Handler::sync_attachment_to_r2($id, true, $metadata);
+
+            $rewriter = class_exists('R2G_URL_Rewriter') ? R2G_URL_Rewriter::instance() : null;
+            $new_url = $rewriter ? $rewriter->rewrite_url(wp_get_attachment_url($id)) : wp_get_attachment_url($id);
+
+            $msg = ($engine === 'resmush' && !empty($opt_res['resmush_result']['message']))
+                ? $opt_res['resmush_result']['message']
+                : sprintf(esc_html__('Successfully compressed (%s) and synced to Cloudflare R2!', 'r2-by-grisma'), strtoupper($format));
+
+            wp_send_json_success(array(
+                'message'     => $msg,
+                'url'         => $new_url,
+                'format'      => strtoupper($format),
+                'bytes_saved' => $opt_res['bytes_saved'] ?? 0,
+            ));
+        }
+
+        wp_send_json_error(array('message' => 'Optimization failed.'));
     }
 }

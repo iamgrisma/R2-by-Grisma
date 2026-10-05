@@ -333,14 +333,24 @@ class R2G_Admin {
             @unlink($final_path);
         }
 
+        $resmush_info = $opt_res['resmush_result'] ?? null;
+        $engine_status = 'success';
+        $engine_message = '';
+        if ($engine === 'resmush' && is_array($resmush_info)) {
+            $engine_status  = $resmush_info['status'] ?? 'unknown';
+            $engine_message = $resmush_info['message'] ?? '';
+        }
+
         wp_send_json_success(array(
-            'data_url'    => $base64,
-            'orig_size'   => $orig_size,
-            'comp_size'   => $comp_size,
-            'bytes_saved' => max(0, $orig_size - $comp_size),
-            'mime'        => $mime,
-            'format'      => $format,
-            'engine'      => $engine,
+            'data_url'       => $base64,
+            'orig_size'      => $orig_size,
+            'comp_size'      => $comp_size,
+            'bytes_saved'    => max(0, $orig_size - $comp_size),
+            'mime'           => $mime,
+            'format'         => $format,
+            'engine'         => $engine,
+            'engine_status'  => $engine_status,
+            'engine_message' => $engine_message,
         ));
     }
 
