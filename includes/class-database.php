@@ -350,6 +350,59 @@ class R2G_Database {
     }
 
     /**
+     * One-time migration of legacy postmeta sync records into database index
+     *
+     * @return int Number of records migrated
+     */
+    public static function migrate_from_postmeta() {
+        global $wpdb;
+        $table = self::table();
+
+        if ($wpdb->get_var($wpdb->prepare("SHOW TABLES LIKE %s", $table)) !== $table) {
+            return 0;
+        }
+
+        $migrated = 0;
+        $items = $wpdb->get_results(
+            "SELECT p.ID, p.post_mime_type, pm.meta_value as r2_key
+             FROM {$wpdb->posts} p
+             INNER JOIN {$wpdb->postmeta} pm_s ON p.ID = pm_s.post_id AND pm_s.meta_key = '_r2g_synced'
+             LEFT JOIN {$wpdb->postmeta} pm ON p.ID = pm.post_id AND pm.meta_key = '_r2g_key'
+             LEFT JOIN {$table} db ON p.ID = db.attachment_id
+             WHERE p.post_type = 'attachment' AND db.id IS NULL
+             LIMIT 200"
+        );
+
+        if (!empty($items)) {
+            foreach ($items as $item) {
+                $id = (int) $item->ID;
+                $file = get_attached_file($id);
+                $has_local = !empty($file) && file_exists($file);
+                $meta = wp_get_attachment_metadata($id);
+                $file_size = $has_local ? filesize($file) : (isset($meta['filesize']) ? $meta['filesize'] : 0);
+                $thumb_count = !empty($meta['sizes']) ? count($meta['sizes']) : 0;
+                $key = !empty($item->r2_key) ? $item->r2_key : (class_exists('R2G_Media_Handler') ? R2G_Media_Handler::get_r2_key_from_path($file) : basename($file ?: ''));
+
+                self::upsert($id, array(
+                    'r2_key'        => $key,
+                    'file_name'     => basename($file ?: ''),
+                    'mime_type'     => $item->post_mime_type,
+                    'file_size'     => (int) $file_size,
+                    'original_size' => (int) $file_size,
+                    'status'        => 'synced',
+                    'has_local'     => $has_local ? 1 : 0,
+                    'thumb_count'   => $thumb_count,
+                    'synced_at'     => current_time('mysql'),
+                ));
+                $migrated++;
+            }
+        }
+
+        update_option('r2g_postmeta_migrated', '1');
+        return $migrated;
+    }
+
+    /**
      * Comprehensive Import of Existing Offloaded Media
      * Scans Media Cloud Sync's native table (wpmcs_items), missing local files,
      * dummy placeholder files, and legacy postmeta.

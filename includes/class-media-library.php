@@ -292,7 +292,8 @@ class R2G_Media_Library {
                     break;
 
                 case 'r2g_bulk_delete_local':
-                    if (get_post_meta($id, '_r2g_synced', true) || (class_exists('R2G_Database') && R2G_Database::get($id)?->status === 'synced')) {
+                    $rec = class_exists('R2G_Database') ? R2G_Database::get($id) : null;
+                    if (get_post_meta($id, '_r2g_synced', true) || ($rec && $rec->status === 'synced')) {
                         R2G_Media_Handler::delete_local_files($id);
                         $count++;
                     }

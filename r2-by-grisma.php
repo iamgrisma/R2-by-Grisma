@@ -3,7 +3,7 @@
  * Plugin Name: R2 by Grisma
  * Plugin URI: https://grisma.com.np
  * Description: Enterprise Cloudflare R2 sync with client-side Browser Edge compression, on-site WebP conversion, custom CDN delivery, and zero vendor bloat.
- * Version: 1.0.2
+ * Version: 1.0.3
  * Author: Grisma
  * Author URI: https://grisma.com.np
  * License: GPL v2 or later
@@ -19,7 +19,7 @@ if (!defined('ABSPATH')) {
 }
 
 // Define Constants
-define('R2G_VERSION', '1.0.2');
+define('R2G_VERSION', '1.0.3');
 define('R2G_FILE', __FILE__);
 define('R2G_PATH', plugin_dir_path(__FILE__));
 define('R2G_URL', plugin_dir_url(__FILE__));
@@ -102,7 +102,10 @@ class R2_By_Grisma {
         if (get_option('r2g_postmeta_migrated')) {
             return;
         }
-        R2G_Database::migrate_from_postmeta();
+        if (class_exists('R2G_Database') && method_exists('R2G_Database', 'migrate_from_postmeta')) {
+            R2G_Database::migrate_from_postmeta();
+        }
+        update_option('r2g_postmeta_migrated', '1');
     }
 
     /**
