@@ -3,7 +3,7 @@
  * Plugin Name: R2 by Grisma
  * Plugin URI: https://grisma.com.np
  * Description: Enterprise Cloudflare R2 sync with reSmush.it cloud API & Server GD/Imagick optimization, on-site WebP conversion, custom CDN delivery, and zero vendor bloat.
- * Version: 1.0.24
+ * Version: 1.0.25
  * Author: Grisma
  * Author URI: https://grisma.com.np
  * License: GPL v2 or later
@@ -18,7 +18,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('R2G_VERSION', '1.0.24');
+define('R2G_VERSION', '1.0.25');
 define('R2G_FILE', __FILE__);
 define('R2G_PATH', plugin_dir_path(__FILE__));
 define('R2G_URL', plugin_dir_url(__FILE__));
@@ -56,7 +56,12 @@ class R2_By_Grisma {
         return self::$instance;
     }
 
-    public function __construct() {
+    /**
+     * Prevent cloning of the singleton instance
+     */
+    private function __clone() {}
+
+    private function __construct() {
         add_action('admin_init', array('R2G_Database', 'maybe_upgrade'));
         add_action('admin_init', array($this, 'maybe_migrate_postmeta'));
         add_action('admin_init', array($this, 'maybe_migrate_v109'));

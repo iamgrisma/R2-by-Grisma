@@ -26,7 +26,12 @@ class R2G_Admin {
         return self::$instance;
     }
 
-    public function __construct() {
+    /**
+     * Prevent cloning of the singleton instance
+     */
+    private function __clone() {}
+
+    private function __construct() {
         if (!is_admin()) {
             return;
         }
@@ -42,6 +47,39 @@ class R2G_Admin {
         add_action('wp_ajax_r2g_test_connection', array($this, 'ajax_test_connection'));
         add_action('wp_ajax_r2g_fetch_buckets', array($this, 'ajax_fetch_buckets'));
         add_action('wp_ajax_r2g_preview_compression', array($this, 'ajax_preview_compression'));
+
+        // Credential storage hardening
+        add_action('admin_init', array($this, 'maybe_upgrade_secret_storage'));
+        add_action('admin_notices', array($this, 'render_security_notices'));
+    }
+
+    /**
+     * Re-encrypt secrets stored in legacy/insecure formats (b64:, enc:, plaintext).
+     */
+    public function maybe_upgrade_secret_storage() {
+        if (!current_user_can('manage_options')) {
+            return;
+        }
+        R2G_Encryption::maybe_upgrade_option('r2g_secret_key');
+    }
+
+    /**
+     * Warn administrators about weak credential-encryption conditions on the plugin screen.
+     */
+    public function render_security_notices() {
+        if (!current_user_can('manage_options')) {
+            return;
+        }
+        $screen = function_exists('get_current_screen') ? get_current_screen() : null;
+        if (!$screen || $screen->id !== 'settings_page_r2-by-grisma') {
+            return;
+        }
+
+        if (!R2G_Encryption::is_available()) {
+            echo '<div class="notice notice-error"><p>' . esc_html__('R2 by Grisma: neither the OpenSSL nor the Sodium PHP extension is available, so your R2 Secret Access Key cannot be stored securely. Enable OpenSSL or Sodium on your server.', 'r2-by-grisma') . '</p></div>';
+        } elseif (!R2G_Encryption::has_strong_salts()) {
+            echo '<div class="notice notice-warning"><p>' . esc_html__('R2 by Grisma: AUTH_KEY / SECURE_AUTH_KEY are missing or left at their default value in wp-config.php. Your R2 secret is encrypted with a database-stored fallback key instead. Define unique security keys in wp-config.php (https://api.wordpress.org/secret-key/1.1/salt/) and then re-save your Secret Access Key.', 'r2-by-grisma') . '</p></div>';
+        }
     }
 
     /**
@@ -162,11 +200,15 @@ class R2G_Admin {
             }
             update_option('r2g_bucket', $bucket);
 
-            // Secret key
-            $posted_secret = trim($_POST['r2g_secret_key'] ?? '');
+            // Secret key (unslash: WordPress magic-quotes $_POST, which would corrupt keys containing backslashes)
+            $posted_secret = trim(wp_unslash($_POST['r2g_secret_key'] ?? ''));
             if (!empty($posted_secret) && strpos($posted_secret, '••••') === false) {
                 $encrypted = R2G_Encryption::encrypt($posted_secret);
-                update_option('r2g_secret_key', $encrypted);
+                if ($encrypted === '') {
+                    add_settings_error('r2g_messages', 'r2g_encrypt_failed', esc_html__('Your Secret Access Key was NOT saved: no secure encryption backend (OpenSSL or Sodium) is available on this server.', 'r2-by-grisma'), 'error');
+                } else {
+                    update_option('r2g_secret_key', $encrypted, false);
+                }
             }
 
             // Custom CDN Domain / Public URL
@@ -204,6 +246,7 @@ class R2G_Admin {
             update_option('r2g_compress_quality', max(50, min(100, (int)($_POST['r2g_compress_quality'] ?? 82))));
             update_option('r2g_max_width', max(0, (int)($_POST['r2g_max_width'] ?? 1920)));
             update_option('r2g_interceptor_enabled', !empty($_POST['r2g_interceptor_enabled']) ? 1 : 0);
+            update_option('r2g_delete_data_on_uninstall', !empty($_POST['r2g_delete_data_on_uninstall']) ? 1 : 0);
         }
 
         add_settings_error('r2g_messages', 'r2g_saved', esc_html__('Settings saved successfully.', 'r2-by-grisma'), 'updated');
@@ -222,7 +265,7 @@ class R2G_Admin {
         // Read credentials from POST first, fallback to DB
         $account_id = sanitize_text_field($_POST['account_id'] ?? '') ?: get_option('r2g_account_id', '');
         $access_key = sanitize_text_field($_POST['access_key'] ?? '') ?: get_option('r2g_access_key', '');
-        $posted_secret = trim($_POST['secret_key'] ?? '');
+        $posted_secret = trim(wp_unslash($_POST['secret_key'] ?? ''));
 
         if (!empty($posted_secret) && strpos($posted_secret, '••••') === false) {
             $secret_key = $posted_secret;
@@ -262,7 +305,7 @@ class R2G_Admin {
 
         $account_id = sanitize_text_field($_POST['account_id'] ?? '') ?: get_option('r2g_account_id', '');
         $access_key = sanitize_text_field($_POST['access_key'] ?? '') ?: get_option('r2g_access_key', '');
-        $posted_secret = trim($_POST['secret_key'] ?? '');
+        $posted_secret = trim(wp_unslash($_POST['secret_key'] ?? ''));
 
         if (!empty($posted_secret) && strpos($posted_secret, '••••') === false) {
             $secret_key = $posted_secret;
@@ -304,6 +347,9 @@ class R2G_Admin {
         $engine = R2G_Optimizer::normalize_engine(sanitize_text_field($_POST['engine'] ?? ''));
 
         $tmp_file = $_FILES['image']['tmp_name'];
+        if (!empty($_FILES['image']['error']) || !is_uploaded_file($tmp_file)) {
+            wp_send_json_error(array('message' => esc_html__('Invalid upload for preview.', 'r2-by-grisma')));
+        }
         $orig_name = sanitize_file_name($_FILES['image']['name'] ?? 'image.jpg');
         $orig_size = (int) ($_FILES['image']['size'] ?? 0);
         if ($orig_size <= 0 && file_exists($tmp_file)) {
@@ -333,6 +379,7 @@ class R2G_Admin {
             wp_mkdir_p($temp_dir);
             file_put_contents($temp_dir . '/index.php', '<?php // Silence is golden');
         }
+        self::cleanup_stale_temp_files($temp_dir);
 
         $temp_path = $temp_dir . '/preview_' . wp_generate_password(16, false, false) . '.' . $ext;
         if (!copy($tmp_file, $temp_path)) {
@@ -391,6 +438,30 @@ class R2G_Admin {
             'engine_status'  => $engine_status,
             'engine_message' => $engine_note,
         ));
+    }
+
+    /**
+     * Remove preview working files older than one hour.
+     *
+     * Covers files orphaned by aborted requests, PHP timeouts, or optimizer
+     * intermediates (e.g. format-converted outputs) that were never cleaned up.
+     *
+     * @param string $temp_dir
+     */
+    public static function cleanup_stale_temp_files($temp_dir) {
+        if (!is_dir($temp_dir)) {
+            return;
+        }
+        $files = glob(trailingslashit($temp_dir) . 'preview_*');
+        if (empty($files)) {
+            return;
+        }
+        $cutoff = time() - HOUR_IN_SECONDS;
+        foreach ($files as $file) {
+            if (is_file($file) && @filemtime($file) < $cutoff) {
+                @unlink($file);
+            }
+        }
     }
 
     /**
@@ -673,6 +744,16 @@ class R2G_Admin {
                                         <strong><?php esc_html_e('Delete from Cloudflare R2 when media is deleted from WordPress', 'r2-by-grisma'); ?></strong>
                                     </label>
                                     <p class="description"><?php esc_html_e('Keeps your R2 storage synchronized and frees bucket space automatically.', 'r2-by-grisma'); ?></p>
+                                </td>
+                            </tr>
+                            <tr>
+                                <th><?php esc_html_e('Uninstall Cleanup', 'r2-by-grisma'); ?></th>
+                                <td>
+                                    <label>
+                                        <input type="checkbox" name="r2g_delete_data_on_uninstall" value="1" <?php checked((int) get_option('r2g_delete_data_on_uninstall', 0), 1); ?> />
+                                        <strong><?php esc_html_e('Delete the R2 sync index and media metadata when the plugin is uninstalled', 'r2-by-grisma'); ?></strong>
+                                    </label>
+                                    <p class="description"><?php esc_html_e('Settings and credentials are always removed on uninstall. Enable this to also drop the sync index table and R2 attachment metadata. Files in your R2 bucket are never deleted.', 'r2-by-grisma'); ?></p>
                                 </td>
                             </tr>
                             <tr>

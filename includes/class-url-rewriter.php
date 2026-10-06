@@ -24,7 +24,12 @@ class R2G_URL_Rewriter {
         return self::$instance;
     }
 
-    public function __construct() {
+    /**
+     * Prevent cloning of the singleton instance
+     */
+    private function __clone() {}
+
+    private function __construct() {
         $domain = get_option('r2g_custom_domain', '');
         if (empty($domain)) {
             return;

@@ -4,7 +4,7 @@ Tags: r2, cloudflare, cloudflare r2, image optimization, webp, s3, offload media
 Requires at least: 5.8
 Tested up to: 6.7
 Requires PHP: 7.4
-Stable tag: 1.0.24
+Stable tag: 1.0.25
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -32,6 +32,16 @@ Enterprise Cloudflare R2 sync with reSmush.it cloud API & Server GD/Imagick opti
 4. Click **Test Connection & Verify CDN** to confirm connection.
 
 == Changelog ==
+
+= 1.0.25 =
+* Security Hardening: Upgraded credential encryption to authenticated AES-256-CBC (encrypt-then-MAC) with fixed-length binary IV extraction and libsodium secretbox fallback (`sodium_crypto_secretbox`), completely eliminating insecure base64 fallback and providing automatic background upgrades for legacy credentials.
+* Security Hardening: Transitioned R2 HTTP client from raw cURL to WordPress HTTP API (`wp_remote_request()`), respecting corporate proxies, `WP_HTTP_BLOCK_EXTERNAL`, and WordPress CA certificates.
+* Security Hardening: Hardened R2 downloads with directory traversal containment guards, streaming response byte caps, MIME validation, and image binary verification.
+* Security Hardening: Parameterized table introspection queries and strictly validated table identifiers with backtick escaping to prevent SQL injection during media import.
+* Security Hardening: Protected secret key inputs with `wp_unslash()` to prevent backslash corruption, and validated uploaded preview files with `is_uploaded_file()`.
+* Architecture & Standards: Enforced singleton pattern by making constructors private and disabling cloning across all plugin singletons.
+* Rate Limiting & Stability: Added reSmush.it client-side request throttling, HTTP 429/503 circuit-breaker backoff, and upload memory headroom guards.
+* Lifecycle & Cleanup: Added `uninstall.php` to clean up options, transients, temporary working files, and optional database table/metadata purge.
 
 = 1.0.24 =
 * WordPress.org Compliance: Guarded custom GitHub updater behind `R2G_ENABLE_GITHUB_UPDATER` constant; removed forced automatic update override; added explicit Third-Party Services disclosures for Cloudflare R2 and reSmush.it.

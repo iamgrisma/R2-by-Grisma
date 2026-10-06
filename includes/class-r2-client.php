@@ -116,7 +116,7 @@ class R2G_Client {
         // Payload hash (sha256)
         $payload_hash = hash('sha256', $payload);
 
-        // Ensure Content-Type is set for PUT/POST so cURL doesn't add application/x-www-form-urlencoded
+        // Ensure Content-Type is set for PUT/POST so the transport doesn't add application/x-www-form-urlencoded
         if (in_array(strtoupper($method), array('PUT', 'POST'))) {
             $has_content_type = false;
             foreach ($extra_headers as $k => $v) {
@@ -175,44 +175,46 @@ class R2G_Client {
         // Authorization Header
         $auth_header = "AWS4-HMAC-SHA256 Credential={$this->access_key}/{$credential_scope}, SignedHeaders={$signed_headers_str}, Signature={$signature}";
 
-        // Prepare cURL request
+        // Prepare request through the WordPress HTTP API (respects proxies, WP_HTTP_BLOCK_EXTERNAL,
+        // the bundled CA certificate store, and http_request_args / pre_http_request filters).
+        // The Host header is derived from the URL by the transport and matches the signed value.
         $request_url = "https://{$host}" . $clean_uri;
+        $method_uc = strtoupper($method);
         $http_headers = array(
-            "Host: {$host}",
-            "x-amz-date: {$date_time}",
-            "x-amz-content-sha256: {$payload_hash}",
-            "Authorization: {$auth_header}",
-            "Expect:", // Crucial: Disable 100-continue which causes Cloudflare R2 timeouts/signature errors on PUT
+            'x-amz-date'           => $date_time,
+            'x-amz-content-sha256' => $payload_hash,
+            'Authorization'        => $auth_header,
+            // Crucial: an empty Expect header disables 100-continue, which causes
+            // Cloudflare R2 timeouts/signature errors on PUT.
+            'Expect'               => '',
         );
 
         foreach ($extra_headers as $k => $v) {
-            $http_headers[] = "{$k}: {$v}";
+            $http_headers[$k] = $v;
         }
 
-        $ch = curl_init();
-        curl_setopt($ch, CURLOPT_URL, $request_url);
-        curl_setopt($ch, CURLOPT_CUSTOMREQUEST, strtoupper($method));
-        curl_setopt($ch, CURLOPT_HTTPHEADER, $http_headers);
-        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
-        curl_setopt($ch, CURLOPT_FOLLOWLOCATION, false);
-        curl_setopt($ch, CURLOPT_CONNECTTIMEOUT, 15);
-        curl_setopt($ch, CURLOPT_TIMEOUT, 60);
-        curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, true);
+        $args = array(
+            'method'      => $method_uc,
+            'headers'     => $http_headers,
+            'timeout'     => (int) apply_filters('r2g_http_timeout', 60, $method_uc),
+            'redirection' => 0,
+            'sslverify'   => true,
+            'httpversion' => '1.1',
+            'decompress'  => false,
+        );
 
-        if (in_array(strtoupper($method), array('PUT', 'POST'))) {
-            curl_setopt($ch, CURLOPT_POSTFIELDS, $payload);
-        } elseif (strtoupper($method) === 'HEAD') {
-            curl_setopt($ch, CURLOPT_NOBODY, true);
+        if (in_array($method_uc, array('PUT', 'POST'), true)) {
+            $args['body'] = $payload;
         }
 
-        $response_body = curl_exec($ch);
-        $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        $curl_error = curl_error($ch);
-        curl_close($ch);
+        $response = wp_remote_request($request_url, $args);
 
-        if ($curl_error) {
-            return array('success' => false, 'code' => 0, 'body' => '', 'error' => "cURL error: {$curl_error}");
+        if (is_wp_error($response)) {
+            return array('success' => false, 'code' => 0, 'body' => '', 'error' => 'HTTP error: ' . $response->get_error_message());
         }
+
+        $http_code = (int) wp_remote_retrieve_response_code($response);
+        $response_body = (string) wp_remote_retrieve_body($response);
 
         $success = ($http_code >= 200 && $http_code < 300);
 
@@ -290,6 +292,20 @@ class R2G_Client {
             return array('success' => false, 'code' => 0, 'error' => 'Local file does not exist.');
         }
 
+        // The signed PUT body must be held in memory. Guard against fatal memory exhaustion
+        // on very large files (videos, RAW images) and fail with a clear error instead.
+        $file_size = (int) @filesize($local_path);
+        if (!self::has_memory_for_payload($file_size)) {
+            return array(
+                'success' => false,
+                'code'    => 0,
+                'error'   => sprintf(
+                    'File is too large to upload with the current PHP memory_limit (%s MB file). Increase memory_limit or WP_MAX_MEMORY_LIMIT.',
+                    number_format_i18n($file_size / 1048576, 1)
+                ),
+            );
+        }
+
         $payload = file_get_contents($local_path);
         if ($payload === false) {
             return array('success' => false, 'code' => 0, 'error' => 'Could not read local file.');
@@ -306,6 +322,40 @@ class R2G_Client {
         );
 
         return $this->request('PUT', $uri, $payload, $extra_headers);
+    }
+
+    /**
+     * Check whether enough PHP memory is available to buffer an upload payload.
+     *
+     * The payload is read into memory and passed to the HTTP transport, which may
+     * keep an additional copy, so ~2.5x the file size is required as headroom.
+     *
+     * @param int $bytes
+     * @return bool
+     */
+    protected static function has_memory_for_payload($bytes) {
+        if ($bytes <= 0) {
+            return true;
+        }
+
+        if (function_exists('wp_raise_memory_limit')) {
+            wp_raise_memory_limit('admin');
+        }
+
+        $limit = ini_get('memory_limit');
+        if ($limit === false || $limit === '' || (int) $limit === -1) {
+            return true;
+        }
+
+        $limit_bytes = function_exists('wp_convert_hr_to_bytes') ? wp_convert_hr_to_bytes($limit) : (int) $limit;
+        if ($limit_bytes <= 0) {
+            return true;
+        }
+
+        $available = $limit_bytes - memory_get_usage(true);
+        $required = (int) ceil($bytes * 2.5) + 8 * 1048576;
+
+        return $available > $required;
     }
 
     /**

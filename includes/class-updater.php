@@ -40,7 +40,12 @@ class R2G_Updater {
         return self::$instance;
     }
 
-    public function __construct() {
+    /**
+     * Prevent cloning of the singleton instance
+     */
+    private function __clone() {}
+
+    private function __construct() {
         // Native WordPress Update Pipeline Filters
         add_filter('pre_set_site_transient_update_plugins', array($this, 'check_for_update'));
         add_filter('site_transient_update_plugins', array($this, 'check_for_update'));

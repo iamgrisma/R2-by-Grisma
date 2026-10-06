@@ -24,7 +24,12 @@ class R2G_Media_Library {
         return self::$instance;
     }
 
-    public function __construct() {
+    /**
+     * Prevent cloning of the singleton instance
+     */
+    private function __clone() {}
+
+    private function __construct() {
         if (!is_admin()) {
             return;
         }

@@ -37,6 +37,13 @@ class R2G_Database {
     }
 
     /**
+     * Prevent direct instantiation and cloning of the singleton
+     */
+    private function __construct() {}
+
+    private function __clone() {}
+
+    /**
      * Get full table name with prefix
      *
      * @return string
@@ -466,6 +473,23 @@ class R2G_Database {
     }
 
     /**
+     * Validate and backtick-quote a MySQL table identifier.
+     *
+     * $wpdb->prepare() cannot parameterize identifiers, so dynamic table names
+     * (e.g. discovered via SHOW TABLES or supplied by third-party plugins) must be
+     * restricted to safe characters before interpolation.
+     *
+     * @param string $name
+     * @return string|false Quoted identifier, or false if unsafe
+     */
+    public static function quote_identifier($name) {
+        if (!is_string($name) || $name === '' || strlen($name) > 64 || !preg_match('/^[A-Za-z0-9_$]+$/', $name)) {
+            return false;
+        }
+        return '`' . $name . '`';
+    }
+
+    /**
      * Comprehensive Import of Existing Offloaded Media
      * Scans Media Cloud Sync's native table (wpmcs_items), missing local files,
      * dummy placeholder files, and legacy postmeta.
@@ -483,22 +507,29 @@ class R2G_Database {
 
         $wpmcs_exists = $wpdb->get_var($wpdb->prepare("SHOW TABLES LIKE %s", $wpmcs_table));
         $wpmcs_synced_ids = array();
+        $wpmcs_quoted = self::quote_identifier($wpmcs_table);
 
-        if ($wpmcs_exists) {
+        if ($wpmcs_exists && $wpmcs_quoted) {
             $wpmcs_synced_ids = $wpdb->get_col(
-                "SELECT DISTINCT source_id FROM {$wpmcs_table} WHERE source_type = 'media_library'"
+                "SELECT DISTINCT source_id FROM {$wpmcs_quoted} WHERE source_type = 'media_library'"
             );
         }
 
         // Also check any other table matching wpmcs or media_cloud
-        $extra_tables = $wpdb->get_col("SHOW TABLES LIKE '%wpmcs%'");
-        foreach ($extra_tables as $ext_tbl) {
-            if ($ext_tbl !== $wpmcs_table) {
-                $cols = $wpdb->get_col("DESCRIBE {$ext_tbl}");
-                if (in_array('source_id', $cols)) {
-                    $extra_ids = $wpdb->get_col("SELECT DISTINCT source_id FROM {$ext_tbl}");
-                    $wpmcs_synced_ids = array_merge($wpmcs_synced_ids, $extra_ids);
-                }
+        $extra_tables = $wpdb->get_col($wpdb->prepare("SHOW TABLES LIKE %s", '%' . $wpdb->esc_like('wpmcs') . '%'));
+        foreach ((array) $extra_tables as $ext_tbl) {
+            if ($ext_tbl === $wpmcs_table) {
+                continue;
+            }
+            // Table names come from the database server; never interpolate them unvalidated
+            $ext_quoted = self::quote_identifier($ext_tbl);
+            if (!$ext_quoted) {
+                continue;
+            }
+            $has_source_id = $wpdb->get_var($wpdb->prepare("SHOW COLUMNS FROM {$ext_quoted} LIKE %s", 'source_id'));
+            if ($has_source_id) {
+                $extra_ids = $wpdb->get_col("SELECT DISTINCT source_id FROM {$ext_quoted}");
+                $wpmcs_synced_ids = array_merge($wpmcs_synced_ids, (array) $extra_ids);
             }
         }
         $wpmcs_synced_ids = array_unique(array_map('intval', $wpmcs_synced_ids));

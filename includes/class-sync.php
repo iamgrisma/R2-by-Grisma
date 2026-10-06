@@ -25,7 +25,12 @@ class R2G_Sync {
         return self::$instance;
     }
 
-    public function __construct() {
+    /**
+     * Prevent cloning of the singleton instance
+     */
+    private function __clone() {}
+
+    private function __construct() {
         // Ajax handlers
         add_action('wp_ajax_r2g_bulk_sync_batch', array($this, 'ajax_bulk_sync_batch'));
         add_action('wp_ajax_r2g_bulk_clean_verified_local', array($this, 'ajax_bulk_clean_verified_local'));

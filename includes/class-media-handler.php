@@ -25,7 +25,12 @@ class R2G_Media_Handler {
         return self::$instance;
     }
 
-    public function __construct() {
+    /**
+     * Prevent cloning of the singleton instance
+     */
+    private function __clone() {}
+
+    private function __construct() {
         if (get_option('r2g_compress_enabled', 1) && (int) get_option('r2g_max_width', 1920) > 0) {
             add_filter('big_image_size_threshold', '__return_false');
         }
@@ -725,46 +730,174 @@ class R2G_Media_Handler {
         }
 
         $file_path = get_attached_file($attachment_id);
+        if (empty($file_path)) {
+            return false;
+        }
         $metadata = wp_get_attachment_metadata($attachment_id);
         $main_key = get_post_meta($attachment_id, '_r2g_key', true);
 
         if (empty($main_key)) {
             $main_key = self::get_r2_key_from_path($file_path);
         }
-
-        $cdn_base = rtrim($custom_domain, '/');
-
-        // Download main file
-        $remote_url = $cdn_base . '/' . ltrim($main_key, '/');
-        $res = wp_remote_get($remote_url, array('timeout' => 30));
-
-        if (!is_wp_error($res) && wp_remote_retrieve_response_code($res) === 200) {
-            $body = wp_remote_retrieve_body($res);
-            $dir = dirname($file_path);
-            if (!file_exists($dir)) {
-                wp_mkdir_p($dir);
-            }
-            file_put_contents($file_path, $body);
-
-            // Download thumbnails if available
-            if (!empty($metadata['sizes']) && is_array($metadata['sizes'])) {
-                foreach ($metadata['sizes'] as $size_info) {
-                    $thumb_path = $dir . '/' . $size_info['file'];
-                    $thumb_key = self::get_r2_key_from_path($thumb_path);
-                    $t_url = $cdn_base . '/' . ltrim($thumb_key, '/');
-                    $t_res = wp_remote_get($t_url, array('timeout' => 30));
-                    if (!is_wp_error($t_res) && wp_remote_retrieve_response_code($t_res) === 200) {
-                        file_put_contents($thumb_path, wp_remote_retrieve_body($t_res));
-                    }
-                }
-            }
-
-            delete_post_meta($attachment_id, '_r2g_local_deleted');
-            R2G_Database::set_has_local($attachment_id, true);
-            return true;
+        if (empty($main_key)) {
+            return false;
         }
 
-        return false;
+        $cdn_base = rtrim($custom_domain, '/');
+        $expected_mime = (string) get_post_mime_type($attachment_id);
+
+        // Download main file (validated before it is written into uploads)
+        $remote_url = $cdn_base . '/' . ltrim($main_key, '/');
+        if (!self::fetch_validated_remote_file($remote_url, $file_path, $expected_mime)) {
+            return false;
+        }
+
+        // Download thumbnails if available
+        $dir = dirname($file_path);
+        if (!empty($metadata['sizes']) && is_array($metadata['sizes'])) {
+            foreach ($metadata['sizes'] as $size_info) {
+                if (empty($size_info['file']) || !is_string($size_info['file'])) {
+                    continue;
+                }
+                // Thumbnail entries must be bare file names in the same directory
+                $thumb_file = wp_basename($size_info['file']);
+                if ($thumb_file !== $size_info['file'] || validate_file($thumb_file) !== 0) {
+                    continue;
+                }
+                $thumb_path = $dir . '/' . $thumb_file;
+                $thumb_key = self::get_r2_key_from_path($thumb_path);
+                if (empty($thumb_key)) {
+                    continue;
+                }
+                $t_url = $cdn_base . '/' . ltrim($thumb_key, '/');
+                $t_mime = !empty($size_info['mime-type']) ? (string) $size_info['mime-type'] : $expected_mime;
+                self::fetch_validated_remote_file($t_url, $thumb_path, $t_mime);
+            }
+        }
+
+        delete_post_meta($attachment_id, '_r2g_local_deleted');
+        R2G_Database::set_has_local($attachment_id, true);
+        return true;
+    }
+
+    /**
+     * Download a remote object to a temp file, validate it, then move it into place.
+     *
+     * Validation:
+     *  - destination must resolve inside the uploads base directory
+     *  - HTTP 200, non-empty, below the size cap (response is size-limited while streaming)
+     *  - Content-Type must not contradict the expected MIME family (text/html error pages etc.)
+     *  - extension/MIME must be an allowed upload type and match the real file contents
+     *  - image attachments must be decodable images
+     *
+     * @param string $url
+     * @param string $dest_path
+     * @param string $expected_mime
+     * @return bool
+     */
+    protected static function fetch_validated_remote_file($url, $dest_path, $expected_mime = '') {
+        if (!wp_http_validate_url($url)) {
+            return false;
+        }
+
+        // Ensure destination is inside the uploads directory
+        $uploads = wp_upload_dir(null, false);
+        $base_dir = wp_normalize_path(untrailingslashit($uploads['basedir']));
+        $dest_path = wp_normalize_path($dest_path);
+        $dest_dir = dirname($dest_path);
+        if (preg_match('#(^|/)\.\.(/|$)#', $dest_path) || strpos($dest_dir . '/', $base_dir . '/') !== 0) {
+            return false;
+        }
+        if (!file_exists($dest_dir) && !wp_mkdir_p($dest_dir)) {
+            return false;
+        }
+
+        $max_bytes = (int) apply_filters('r2g_download_max_bytes', 512 * 1048576, $url, $dest_path);
+
+        if (!function_exists('wp_tempnam')) {
+            require_once ABSPATH . 'wp-admin/includes/file.php';
+        }
+        $tmp = wp_tempnam(wp_basename($dest_path));
+        if (!$tmp) {
+            return false;
+        }
+
+        $res = wp_remote_get($url, array(
+            'timeout'             => 60,
+            'redirection'         => 2,
+            'stream'              => true,
+            'filename'            => $tmp,
+            'limit_response_size' => $max_bytes,
+        ));
+
+        $cleanup = function () use ($tmp) {
+            if (file_exists($tmp)) {
+                @unlink($tmp);
+            }
+        };
+
+        if (is_wp_error($res) || (int) wp_remote_retrieve_response_code($res) !== 200) {
+            $cleanup();
+            return false;
+        }
+
+        clearstatcache(true, $tmp);
+        $size = file_exists($tmp) ? (int) filesize($tmp) : 0;
+        if ($size <= 0 || $size >= $max_bytes) {
+            // Empty, or truncated at the size limit
+            $cleanup();
+            return false;
+        }
+
+        // Content-Type header must not contradict the expected MIME family
+        $content_type = strtolower(trim(explode(';', (string) wp_remote_retrieve_header($res, 'content-type'))[0]));
+        $expected_family = $expected_mime !== '' ? strtolower(strtok($expected_mime, '/')) : '';
+        if ($content_type !== '' && $content_type !== 'application/octet-stream' && $content_type !== 'binary/octet-stream') {
+            if ($expected_family !== '' && strpos($content_type, $expected_family . '/') !== 0) {
+                $cleanup();
+                return false;
+            }
+            if (in_array($content_type, array('text/html', 'application/xhtml+xml'), true) && $expected_family !== 'text') {
+                $cleanup();
+                return false;
+            }
+        }
+
+        // Real file contents must match an allowed upload type (type reflects the detected
+        // contents when it differs from the extension, so the family check below still applies)
+        $check = wp_check_filetype_and_ext($tmp, wp_basename($dest_path));
+        if (empty($check['ext']) || empty($check['type'])) {
+            $cleanup();
+            return false;
+        }
+        if ($expected_family !== '' && strpos($check['type'], $expected_family . '/') !== 0) {
+            $cleanup();
+            return false;
+        }
+
+        if ($expected_family === 'image' || strpos($check['type'], 'image/') === 0) {
+            if ($check['type'] !== 'image/svg+xml' && @getimagesize($tmp) === false) {
+                $cleanup();
+                return false;
+            }
+        }
+
+        // Move into place
+        if (!@rename($tmp, $dest_path)) {
+            if (!@copy($tmp, $dest_path)) {
+                $cleanup();
+                return false;
+            }
+            $cleanup();
+        }
+
+        // Match WordPress default upload permissions
+        $stat = @stat($dest_dir);
+        if ($stat) {
+            @chmod($dest_path, $stat['mode'] & 0000666);
+        }
+
+        return true;
     }
 
     /**

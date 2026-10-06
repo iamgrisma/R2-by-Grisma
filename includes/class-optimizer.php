@@ -15,6 +15,14 @@ class R2G_Optimizer {
     const RESMUSH_TIMEOUT   = 60;
 
     /**
+     * reSmush.it rate limiting (free public API: avoid IP bans during bulk sync)
+     */
+    const RESMUSH_LAST_CALL_KEY   = 'r2g_resmush_last_call';
+    const RESMUSH_BACKOFF_KEY     = 'r2g_resmush_backoff';
+    const RESMUSH_MIN_INTERVAL_MS = 1000;
+    const RESMUSH_BACKOFF_SECONDS = 300;
+
+    /**
      * Normalize engine slug
      *
      * @param string $engine
@@ -426,6 +434,18 @@ class R2G_Optimizer {
             @set_time_limit(180);
         }
 
+        // Circuit breaker: skip the API entirely while it is rate limiting us
+        $backoff_until = (int) get_transient(self::RESMUSH_BACKOFF_KEY);
+        if ($backoff_until > time()) {
+            return array(
+                'success' => false,
+                'status'  => 'rate_limited',
+                'message' => sprintf(__('reSmush.it is temporarily paused after rate limiting (retry in %d s).', 'r2-by-grisma'), $backoff_until - time()),
+            );
+        }
+
+        self::throttle_resmush();
+
         $boundary = wp_generate_password(24, false);
         $filename = preg_replace('/[^A-Za-z0-9._-]/', '_', basename($file_path));
         $payload = "--{$boundary}\r\n"
@@ -458,10 +478,23 @@ class R2G_Optimizer {
             }
 
             $code = (int) wp_remote_retrieve_response_code($response);
+
+            if ($code === 429 || $code === 503) {
+                self::start_resmush_backoff(wp_remote_retrieve_header($response, 'retry-after'));
+                return array(
+                    'success' => false,
+                    'status'  => 'rate_limited',
+                    'message' => sprintf(__('reSmush.it rate limit reached (HTTP %d); pausing API calls.', 'r2-by-grisma'), $code),
+                );
+            }
+
             $decoded = json_decode(wp_remote_retrieve_body($response), true);
 
             if ($code >= 500 || !is_array($decoded)) {
                 $last_error = sprintf(__('HTTP %d', 'r2-by-grisma'), $code);
+                if ($attempt < 2) {
+                    usleep(1500000);
+                }
                 continue;
             }
 
@@ -484,6 +517,8 @@ class R2G_Optimizer {
         }
 
         if ($data === null) {
+            // Two consecutive failures: back off so a bulk run doesn't keep hammering the API
+            self::start_resmush_backoff('');
             return array(
                 'success' => false,
                 'status'  => 'network_error',
@@ -550,6 +585,38 @@ class R2G_Optimizer {
             'message' => __('reSmush.it: image was already optimal.', 'r2-by-grisma'),
             'percent' => 0,
         );
+    }
+
+    /**
+     * Enforce a minimum interval between reSmush.it API calls across requests.
+     */
+    private static function throttle_resmush() {
+        $min_ms = (int) apply_filters('r2g_resmush_min_interval_ms', self::RESMUSH_MIN_INTERVAL_MS);
+        if ($min_ms <= 0) {
+            return;
+        }
+        $min_ms = min($min_ms, 10000);
+
+        $last = (float) get_transient(self::RESMUSH_LAST_CALL_KEY);
+        if ($last > 0) {
+            $elapsed_ms = (microtime(true) - $last) * 1000;
+            if ($elapsed_ms >= 0 && $elapsed_ms < $min_ms) {
+                usleep((int) (($min_ms - $elapsed_ms) * 1000));
+            }
+        }
+        set_transient(self::RESMUSH_LAST_CALL_KEY, (string) microtime(true), MINUTE_IN_SECONDS);
+    }
+
+    /**
+     * Pause reSmush.it usage (GD/Imagick fallback is used in the meantime).
+     *
+     * @param string $retry_after Retry-After header value (seconds), if provided
+     */
+    private static function start_resmush_backoff($retry_after) {
+        $seconds = is_numeric($retry_after) ? (int) $retry_after : self::RESMUSH_BACKOFF_SECONDS;
+        $seconds = max(60, min(HOUR_IN_SECONDS, $seconds));
+        $seconds = (int) apply_filters('r2g_resmush_backoff_seconds', $seconds);
+        set_transient(self::RESMUSH_BACKOFF_KEY, time() + $seconds, $seconds);
     }
 }
 
