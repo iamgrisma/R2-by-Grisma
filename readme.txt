@@ -4,7 +4,7 @@ Tags: r2, cloudflare, cloudflare r2, image optimization, webp, s3, offload media
 Requires at least: 5.8
 Tested up to: 6.7
 Requires PHP: 7.4
-Stable tag: 1.0.25
+Stable tag: 1.0.26
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -32,6 +32,10 @@ Enterprise Cloudflare R2 sync with reSmush.it cloud API & Server GD/Imagick opti
 4. Click **Test Connection & Verify CDN** to confirm connection.
 
 == Changelog ==
+
+= 1.0.26 =
+* Update Pipeline: Fully restored Updates & Rollback tab and GitHub Release updater in WordPress Admin settings.
+* Auto-Updates: Re-enabled automatic background update handling directly synced with GitHub Releases.
 
 = 1.0.25 =
 * Security Hardening: Upgraded credential encryption to authenticated AES-256-CBC (encrypt-then-MAC) with fixed-length binary IV extraction and libsodium secretbox fallback (`sodium_crypto_secretbox`), completely eliminating insecure base64 fallback and providing automatic background upgrades for legacy credentials.

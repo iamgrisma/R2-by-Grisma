@@ -424,7 +424,10 @@ class R2G_Updater {
      * @return bool
      */
     public function filter_auto_update_plugin($update, $item) {
-        // Respect site owner auto-update settings instead of forcing updates
+        $plugin_file = $this->get_plugin_basename();
+        if (!empty($item->plugin) && $item->plugin === $plugin_file) {
+            return true;
+        }
         return $update;
     }
 
