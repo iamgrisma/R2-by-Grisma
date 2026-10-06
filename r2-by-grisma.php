@@ -3,7 +3,7 @@
  * Plugin Name: R2 by Grisma
  * Plugin URI: https://grisma.com.np
  * Description: Enterprise Cloudflare R2 sync with reSmush.it cloud API & Server GD/Imagick optimization, on-site WebP conversion, custom CDN delivery, and zero vendor bloat.
- * Version: 1.0.23
+ * Version: 1.0.24
  * Author: Grisma
  * Author URI: https://grisma.com.np
  * License: GPL v2 or later
@@ -18,7 +18,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('R2G_VERSION', '1.0.23');
+define('R2G_VERSION', '1.0.24');
 define('R2G_FILE', __FILE__);
 define('R2G_PATH', plugin_dir_path(__FILE__));
 define('R2G_URL', plugin_dir_url(__FILE__));
@@ -67,7 +67,12 @@ class R2_By_Grisma {
         R2G_Media_Library::instance();
         R2G_Sync::instance();
         R2G_Admin::instance();
-        R2G_Updater::instance();
+
+        // GitHub Release Updater is disabled by default for WordPress.org Directory compliance.
+        // To enable standalone GitHub updates on non-repo installs, define R2G_ENABLE_GITHUB_UPDATER as true in wp-config.php.
+        if (defined('R2G_ENABLE_GITHUB_UPDATER') && R2G_ENABLE_GITHUB_UPDATER) {
+            R2G_Updater::instance();
+        }
 
         add_filter('plugin_action_links_' . plugin_basename(__FILE__), array($this, 'add_plugin_action_links'));
     }

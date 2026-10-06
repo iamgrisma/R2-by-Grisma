@@ -489,13 +489,9 @@ class R2G_Media_Library {
      */
     public function ajax_sync_single() {
         check_ajax_referer('r2g_admin_nonce', 'nonce');
-        if (!current_user_can('upload_files')) {
-            wp_send_json_error(array('message' => 'Unauthorized'));
-        }
-
         $id = (int)($_POST['id'] ?? 0);
-        if ($id <= 0) {
-            wp_send_json_error(array('message' => 'Invalid attachment ID'));
+        if ($id <= 0 || !current_user_can('edit_post', $id)) {
+            wp_send_json_error(array('message' => esc_html__('Unauthorized or invalid attachment ID.', 'r2-by-grisma')));
         }
 
         $ok = R2G_Media_Handler::sync_attachment_to_r2($id, true);
@@ -510,11 +506,11 @@ class R2G_Media_Library {
      */
     public function ajax_download_single() {
         check_ajax_referer('r2g_admin_nonce', 'nonce');
-        if (!current_user_can('upload_files')) {
-            wp_send_json_error(array('message' => 'Unauthorized'));
+        $id = (int)($_POST['id'] ?? 0);
+        if ($id <= 0 || !current_user_can('edit_post', $id)) {
+            wp_send_json_error(array('message' => esc_html__('Unauthorized or invalid attachment ID.', 'r2-by-grisma')));
         }
 
-        $id = (int)($_POST['id'] ?? 0);
         $ok = R2G_Media_Handler::download_from_r2_to_local($id);
         if ($ok) {
             wp_send_json_success(array('message' => esc_html__('Successfully downloaded to local server', 'r2-by-grisma')));
@@ -527,11 +523,11 @@ class R2G_Media_Library {
      */
     public function ajax_delete_local_single() {
         check_ajax_referer('r2g_admin_nonce', 'nonce');
-        if (!current_user_can('upload_files')) {
-            wp_send_json_error(array('message' => 'Unauthorized'));
+        $id = (int)($_POST['id'] ?? 0);
+        if ($id <= 0 || !current_user_can('delete_post', $id)) {
+            wp_send_json_error(array('message' => esc_html__('Unauthorized: You do not have permission to delete this file.', 'r2-by-grisma')));
         }
 
-        $id = (int)($_POST['id'] ?? 0);
         $ok = R2G_Media_Handler::delete_local_files($id);
         if (!$ok) {
             wp_send_json_error(array('message' => esc_html__('Local files were kept. R2 could not verify every file that would be deleted, or the server could not remove a file. Check the R2 connection and sync status first.', 'r2-by-grisma')));
@@ -544,11 +540,11 @@ class R2G_Media_Library {
      */
     public function ajax_delete_r2_single() {
         check_ajax_referer('r2g_admin_nonce', 'nonce');
-        if (!current_user_can('upload_files')) {
-            wp_send_json_error(array('message' => 'Unauthorized'));
+        $id = (int)($_POST['id'] ?? 0);
+        if ($id <= 0 || !current_user_can('delete_post', $id)) {
+            wp_send_json_error(array('message' => esc_html__('Unauthorized: You do not have permission to delete this file.', 'r2-by-grisma')));
         }
 
-        $id = (int)($_POST['id'] ?? 0);
         $ok = R2G_Media_Handler::delete_from_r2($id);
         if ($ok) {
             wp_send_json_success(array('message' => esc_html__('File removed from Cloudflare R2 bucket.', 'r2-by-grisma')));
@@ -561,13 +557,9 @@ class R2G_Media_Library {
      */
     public function ajax_convert_webp_single() {
         check_ajax_referer('r2g_admin_nonce', 'nonce');
-        if (!current_user_can('upload_files')) {
-            wp_send_json_error(array('message' => 'Unauthorized'));
-        }
-
         $id = (int)($_POST['id'] ?? 0);
-        if ($id <= 0) {
-            wp_send_json_error(array('message' => 'Invalid attachment ID'));
+        if ($id <= 0 || !current_user_can('edit_post', $id)) {
+            wp_send_json_error(array('message' => esc_html__('Unauthorized or invalid attachment ID.', 'r2-by-grisma')));
         }
 
         $file_path = get_attached_file($id);
@@ -627,13 +619,9 @@ class R2G_Media_Library {
      */
     public function ajax_recompress_attachment() {
         check_ajax_referer('r2g_admin_nonce', 'nonce');
-        if (!current_user_can('upload_files')) {
-            wp_send_json_error(array('message' => 'Unauthorized'));
-        }
-
         $id = (int)($_POST['id'] ?? 0);
-        if ($id <= 0) {
-            wp_send_json_error(array('message' => 'Invalid attachment ID'));
+        if ($id <= 0 || !current_user_can('edit_post', $id)) {
+            wp_send_json_error(array('message' => esc_html__('Unauthorized or invalid attachment ID.', 'r2-by-grisma')));
         }
 
         $engine = R2G_Optimizer::normalize_engine(sanitize_text_field($_POST['engine'] ?? ''));

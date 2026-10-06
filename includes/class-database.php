@@ -366,17 +366,26 @@ class R2G_Database {
     /**
      * Get attachment IDs not yet synced to R2
      *
-     * @param int $limit
+     * @param int   $limit
+     * @param array $exclude_ids Optional list of attachment IDs to exclude
      * @return array
      */
-    public static function get_unsynced_ids($limit = 50) {
+    public static function get_unsynced_ids($limit = 50, $exclude_ids = array()) {
         global $wpdb;
         $table = self::table();
+
+        $not_in_sql = '';
+        if (!empty($exclude_ids) && is_array($exclude_ids)) {
+            $sanitized_ids = implode(',', array_filter(array_map('intval', $exclude_ids)));
+            if (!empty($sanitized_ids)) {
+                $not_in_sql = "AND p.ID NOT IN ({$sanitized_ids})";
+            }
+        }
 
         return $wpdb->get_col($wpdb->prepare(
             "SELECT p.ID FROM {$wpdb->posts} p
              LEFT JOIN {$table} r ON p.ID = r.attachment_id AND r.status = 'synced'
-             WHERE p.post_type = 'attachment' AND p.post_status != 'trash' AND r.id IS NULL
+             WHERE p.post_type = 'attachment' AND p.post_status != 'trash' AND r.id IS NULL {$not_in_sql}
              ORDER BY p.ID DESC
              LIMIT %d",
             $limit

@@ -340,6 +340,7 @@
 
       syncPaused = false;
       syncCancelled = false;
+      let failedIds = [];
 
       const $startBtn = $(this);
       const $pauseBtn = $('#r2g-btn-pause-sync');
@@ -374,6 +375,7 @@
             preset: syncPreset,
             quality: syncQuality,
             engine: syncEngine,
+            exclude_ids: failedIds,
             nonce: nonce,
           },
           success: function(res) {
@@ -382,6 +384,14 @@
               $pauseBtn.hide();
               $startBtn.show().text('Retry Bulk Sync');
               return;
+            }
+
+            if (res.data.results && Array.isArray(res.data.results)) {
+              res.data.results.forEach(function(item) {
+                if (item.status === 'failed' && failedIds.indexOf(item.id) === -1) {
+                  failedIds.push(item.id);
+                }
+              });
             }
 
             const stats = res.data.stats || {};
@@ -403,21 +413,18 @@
             $progPct.text(pct + '% (' + synced + '/' + total + ')');
             $progText.text('Synced ' + synced + ' / ' + total + ' media items (' + remaining + ' remaining)...');
 
-            if ((res.data.failed_count || 0) > 0 && (res.data.synced_count || 0) === 0 && remaining > 0) {
-              $progText.text('Stopped: ' + res.data.failed_count + ' media items failed. Check the R2 connection, permissions, and local files, then retry. The sync will not loop on the same failed files.');
-              $pauseBtn.hide();
-              $cancelBtn.hide();
-              $startBtn.show().text('Retry Bulk Sync');
-              return;
-            }
-
-            if (res.data.done || !res.data.remaining) {
+            if (res.data.done || !res.data.remaining || remaining <= failedIds.length) {
               $progFill.css('width', '100%');
               $progPct.text('100% (' + total + '/' + total + ')');
-              $progText.text('All media successfully synced to Cloudflare R2! (0 remaining). Local copies preserved safely.');
+              if (failedIds.length > 0) {
+                $progText.text('Bulk sync completed. ' + failedIds.length + ' item(s) could not be synced. Check R2 permissions and click below to retry.');
+                $startBtn.show().text('Retry Failed Items (' + failedIds.length + ')');
+              } else {
+                $progText.text('All media successfully synced to Cloudflare R2! (0 remaining). Local copies preserved safely.');
+                $startBtn.show().text('Sync Finished (Run Again)');
+              }
               $pauseBtn.hide();
               $cancelBtn.hide();
-              $startBtn.show().text('Sync Finished (Run Again)');
               return;
             }
 

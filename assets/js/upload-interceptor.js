@@ -524,7 +524,7 @@
       // Multi-file batch management
       if (files.length > 1) {
         let totalBytes = 0;
-        let thumbsHtml = '';
+        const $batchThumbs = $('#r2g-batch-thumbs').empty();
         files.forEach(function(f, i) {
           const nf = f.getNative ? f.getNative() : (f.getSource ? f.getSource() : f);
           const sz = nf.size || f.size || 0;
@@ -533,15 +533,16 @@
           if (nf instanceof Blob) {
             thumbSrc = URL.createObjectURL(nf);
           }
-          thumbsHtml += `
-            <div class="r2g-batch-thumb-item ${i === 0 ? 'r2g-batch-active' : ''}" data-idx="${i}" title="${nf.name || f.name || 'image'}">
-              <img src="${thumbSrc}" alt="thumb" />
-            </div>
-          `;
+          const $item = $('<div>')
+            .addClass('r2g-batch-thumb-item' + (i === 0 ? ' r2g-batch-active' : ''))
+            .attr('data-idx', i)
+            .attr('title', nf.name || f.name || 'image');
+          const $img = $('<img>').attr('src', thumbSrc).attr('alt', 'thumb');
+          $item.append($img);
+          $batchThumbs.append($item);
         });
 
         $('#r2g-batch-title').text('Batch: ' + files.length + ' images (' + self.formatBytes(totalBytes) + ' total)');
-        $('#r2g-batch-thumbs').html(thumbsHtml);
         $('#r2g-batch-bar').show();
         $('#r2g-preview-batch-chip').text('+ ' + (files.length - 1) + ' in batch').show();
       } else {

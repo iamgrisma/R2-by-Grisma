@@ -412,17 +412,14 @@ class R2G_Updater {
     }
 
     /**
-     * Allow automatic background updates
+     * Filter automatic background updates
      *
      * @param bool $update
      * @param object $item
      * @return bool
      */
     public function filter_auto_update_plugin($update, $item) {
-        $plugin_file = $this->get_plugin_basename();
-        if (!empty($item->plugin) && $item->plugin === $plugin_file) {
-            return true;
-        }
+        // Respect site owner auto-update settings instead of forcing updates
         return $update;
     }
 
@@ -446,6 +443,10 @@ class R2G_Updater {
      */
     public function handle_manual_check() {
         if (isset($_GET['r2g_check_updates']) && check_admin_referer('r2g_manual_check_nonce')) {
+            if (!current_user_can('update_plugins')) {
+                wp_die(esc_html__('Unauthorized.', 'r2-by-grisma'));
+            }
+
             delete_transient(self::TRANSIENT_LATEST);
             delete_transient(self::TRANSIENT_RELEASES);
             delete_site_transient('update_plugins');

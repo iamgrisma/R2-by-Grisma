@@ -319,8 +319,12 @@ class R2G_URL_Rewriter {
         $has_uploaded_thumbs = is_array($uploaded_keys) && count($uploaded_keys) > 1;
 
         if (!$has_uploaded_thumbs) {
-            // Do not output srcset pointing to non-existent thumb sizes on R2
-            return array();
+            $file_path = get_attached_file($attachment_id);
+            $has_local = !empty($file_path) && file_exists($file_path);
+            if (!$has_local) {
+                // Only drop srcset if thumbnails neither exist on R2 nor locally
+                return array();
+            }
         }
 
         foreach ($sources as $width => &$data) {
@@ -413,6 +417,32 @@ class R2G_URL_Rewriter {
     }
 
     /**
+     * Get configured CDN upload base directory URL
+     *
+     * @return string
+     */
+    public function get_cdn_upload_base() {
+        $cdn_base = $this->get_cdn_base();
+        if (empty($cdn_base)) {
+            return '';
+        }
+        $structure = get_option('r2g_path_structure', 'wp_content');
+        $custom_prefix = trim(get_option('r2g_path_prefix', ''), '/');
+
+        switch ($structure) {
+            case 'uploads_only':
+                return $cdn_base . '/uploads';
+            case 'date_only':
+                return $cdn_base;
+            case 'custom':
+                return (!empty($custom_prefix) ? $cdn_base . '/' . $custom_prefix : $cdn_base);
+            case 'wp_content':
+            default:
+                return $cdn_base . '/wp-content/uploads';
+        }
+    }
+
+    /**
      * Filter Admin Featured Image HTML
      *
      * @param string $content
@@ -427,13 +457,17 @@ class R2G_URL_Rewriter {
 
         $uploads = wp_upload_dir();
         $baseurl = $uploads['baseurl'];
-        $cdn_base = $this->get_cdn_base();
+        $target_url = $this->get_cdn_upload_base();
 
-        if (empty($cdn_base) || empty($baseurl)) {
+        if (empty($target_url) || empty($baseurl)) {
             return $content;
         }
 
-        return str_replace($baseurl, $cdn_base . '/wp-content/uploads', $content);
+        $baseurl_insecure = set_url_scheme($baseurl, 'http');
+        $baseurl_secure   = set_url_scheme($baseurl, 'https');
+
+        $content = str_replace($baseurl_secure, $target_url, $content);
+        return str_replace($baseurl_insecure, $target_url, $content);
     }
 
     /**
@@ -449,16 +483,16 @@ class R2G_URL_Rewriter {
 
         $uploads = wp_upload_dir();
         $baseurl = $uploads['baseurl'];
-        $cdn_base = $this->get_cdn_base();
+        $target_url = $this->get_cdn_upload_base();
 
-        if (empty($cdn_base) || empty($baseurl)) {
+        if (empty($target_url) || empty($baseurl)) {
             return $content;
         }
 
-        // Replace http and https instances of local upload URLs
-        $target_url = $cdn_base . '/wp-content/uploads';
-        $content = str_replace($baseurl, $target_url, $content);
+        $baseurl_insecure = set_url_scheme($baseurl, 'http');
+        $baseurl_secure   = set_url_scheme($baseurl, 'https');
 
-        return $content;
+        $content = str_replace($baseurl_secure, $target_url, $content);
+        return str_replace($baseurl_insecure, $target_url, $content);
     }
 }

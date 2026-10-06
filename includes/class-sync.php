@@ -98,7 +98,12 @@ class R2G_Sync {
             $batch_options['engine'] = $engine;
         }
 
-        $unsynced_ids = R2G_Database::get_unsynced_ids($batch_size);
+        $exclude_ids = array();
+        if (!empty($_POST['exclude_ids']) && is_array($_POST['exclude_ids'])) {
+            $exclude_ids = array_map('intval', $_POST['exclude_ids']);
+        }
+
+        $unsynced_ids = R2G_Database::get_unsynced_ids($batch_size, $exclude_ids);
 
         if (empty($unsynced_ids)) {
             wp_send_json_success(array(

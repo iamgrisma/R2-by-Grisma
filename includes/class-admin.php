@@ -310,14 +310,31 @@ class R2G_Admin {
             $orig_size = filesize($tmp_file);
         }
 
+        // Validate image format and MIME type
+        $allowed_exts = array('jpg', 'jpeg', 'png', 'webp', 'gif', 'avif', 'bmp');
+        $ext = strtolower(pathinfo($orig_name, PATHINFO_EXTENSION));
+        if (!in_array($ext, $allowed_exts, true)) {
+            wp_send_json_error(array('message' => esc_html__('Invalid image extension for preview.', 'r2-by-grisma')));
+        }
+
+        $check = wp_check_filetype_and_ext($tmp_file, $orig_name);
+        if (empty($check['ext']) || strpos($check['type'], 'image/') !== 0) {
+            wp_send_json_error(array('message' => esc_html__('Uploaded file is not a valid image format.', 'r2-by-grisma')));
+        }
+
+        if (@getimagesize($tmp_file) === false) {
+            wp_send_json_error(array('message' => esc_html__('Corrupted or invalid image binary.', 'r2-by-grisma')));
+        }
+
         // Create isolated temp working directory inside uploads
         $upload_dir = wp_upload_dir();
         $temp_dir = $upload_dir['basedir'] . '/r2g-temp';
         if (!file_exists($temp_dir)) {
             wp_mkdir_p($temp_dir);
+            file_put_contents($temp_dir . '/index.php', '<?php // Silence is golden');
         }
 
-        $temp_path = $temp_dir . '/preview_' . wp_generate_password(12, false) . '_' . $orig_name;
+        $temp_path = $temp_dir . '/preview_' . wp_generate_password(16, false, false) . '.' . $ext;
         if (!copy($tmp_file, $temp_path)) {
             wp_send_json_error(array('message' => esc_html__('Could not initialize temporary file for preview.', 'r2-by-grisma')));
         }
@@ -384,8 +401,13 @@ class R2G_Admin {
             return;
         }
 
+        $show_updates_tab = defined('R2G_ENABLE_GITHUB_UPDATER') && R2G_ENABLE_GITHUB_UPDATER;
+        $allowed_tabs = array('setup', 'settings', 'index');
+        if ($show_updates_tab) {
+            $allowed_tabs[] = 'updates';
+        }
         $active_tab = isset($_GET['tab']) ? sanitize_text_field($_GET['tab']) : 'setup';
-        if (!in_array($active_tab, array('setup', 'settings', 'index', 'updates'))) {
+        if (!in_array($active_tab, $allowed_tabs, true)) {
             $active_tab = 'setup';
         }
 
@@ -458,10 +480,12 @@ class R2G_Admin {
                     <svg class="r2g-tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>
                     <?php esc_html_e('Storage & Media Sync', 'r2-by-grisma'); ?>
                 </a>
+                <?php if ($show_updates_tab): ?>
                 <a href="<?php echo esc_url(add_query_arg('tab', 'updates')); ?>" class="nav-tab <?php echo $active_tab === 'updates' ? 'nav-tab-active' : ''; ?>">
                     <svg class="r2g-tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/></svg>
                     <?php esc_html_e('Updates & Rollback', 'r2-by-grisma'); ?>
                 </a>
+                <?php endif; ?>
             </nav>
 
             <!-- TAB 1: SETUP & API KEYS -->
@@ -944,7 +968,7 @@ class R2G_Admin {
                 </div>
 
             <!-- TAB 4: UPDATES & ROLLBACK -->
-            <?php elseif ($active_tab === 'updates'): ?>
+            <?php elseif ($active_tab === 'updates' && $show_updates_tab): ?>
                 <?php
                 $updater     = R2G_Updater::instance();
                 $latest      = $updater->get_latest_release();
@@ -1040,7 +1064,8 @@ class R2G_Admin {
                                         <td style="font-size:12px; color:#475569;">
                                             <?php
                                             $notes = wp_strip_all_tags($rel['changelog'] ?? '');
-                                            echo esc_html(mb_strimwidth($notes, 0, 100, '...'));
+                                            $truncated = function_exists('mb_strimwidth') ? mb_strimwidth($notes, 0, 100, '...') : wp_trim_words($notes, 15, '...');
+                                            echo esc_html($truncated);
                                             ?>
                                             <?php if (!empty($rel['url'])): ?>
                                                 <a href="<?php echo esc_url($rel['url']); ?>" target="_blank" rel="noopener noreferrer" style="font-size:11px; margin-left:6px; color:#2271b1;"><?php esc_html_e('View on GitHub ↗', 'r2-by-grisma'); ?></a>

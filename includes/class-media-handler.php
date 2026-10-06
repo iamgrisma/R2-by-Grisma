@@ -26,7 +26,9 @@ class R2G_Media_Handler {
     }
 
     public function __construct() {
-        add_filter('big_image_size_threshold', '__return_false');
+        if (get_option('r2g_compress_enabled', 1) && (int) get_option('r2g_max_width', 1920) > 0) {
+            add_filter('big_image_size_threshold', '__return_false');
+        }
         add_filter('wp_read_image_metadata', array($this, 'clean_image_metadata'), 10, 3);
         add_filter('wp_insert_attachment_data', array($this, 'clean_attachment_title'), 10, 2);
         add_filter('wp_handle_upload', array($this, 'on_handle_upload'), 10, 2);
@@ -60,7 +62,7 @@ class R2G_Media_Handler {
      * @return array
      */
     public function clean_image_metadata($meta, $file, $source_image_type) {
-        $junk_patterns = array('Intel(R) JPEG Library', 'Intel JPEG Library', 'Intel(R)');
+        $junk_patterns = array('Intel(R) JPEG Library', 'Intel JPEG Library');
         foreach (array('software', 'title', 'caption', 'credit', 'copyright') as $field) {
             if (!empty($meta[$field])) {
                 foreach ($junk_patterns as $junk) {
@@ -82,7 +84,7 @@ class R2G_Media_Handler {
      * @return array
      */
     public function clean_attachment_title($data, $postarr) {
-        $junk_patterns = array('Intel(R) JPEG Library', 'Intel JPEG Library', 'Intel(R)');
+        $junk_patterns = array('Intel(R) JPEG Library', 'Intel JPEG Library');
 
         foreach (array('post_title', 'post_excerpt', 'post_content') as $field) {
             if (!empty($data[$field])) {
@@ -488,10 +490,10 @@ class R2G_Media_Handler {
         }
 
         $post_obj = get_post($attachment_id);
-        if ($post_obj && !empty($post_obj->post_excerpt) && stripos($post_obj->post_excerpt, 'Intel') !== false) {
+        if ($post_obj && !empty($post_obj->post_excerpt) && preg_match('/Intel(\(R\))?\s*JPEG\s*Library/i', $post_obj->post_excerpt)) {
             wp_update_post(array('ID' => $attachment_id, 'post_excerpt' => ''));
         }
-        if (!empty($metadata['image_meta']['caption']) && stripos($metadata['image_meta']['caption'], 'Intel') !== false) {
+        if (!empty($metadata['image_meta']['caption']) && preg_match('/Intel(\(R\))?\s*JPEG\s*Library/i', $metadata['image_meta']['caption'])) {
             $metadata['image_meta']['caption'] = '';
         }
 

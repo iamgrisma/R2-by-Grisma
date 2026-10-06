@@ -4,7 +4,7 @@ Tags: r2, cloudflare, cloudflare r2, image optimization, webp, s3, offload media
 Requires at least: 5.8
 Tested up to: 6.7
 Requires PHP: 7.4
-Stable tag: 1.0.23
+Stable tag: 1.0.24
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -32,6 +32,16 @@ Enterprise Cloudflare R2 sync with reSmush.it cloud API & Server GD/Imagick opti
 4. Click **Test Connection & Verify CDN** to confirm connection.
 
 == Changelog ==
+
+= 1.0.24 =
+* WordPress.org Compliance: Guarded custom GitHub updater behind `R2G_ENABLE_GITHUB_UPDATER` constant; removed forced automatic update override; added explicit Third-Party Services disclosures for Cloudflare R2 and reSmush.it.
+* Security Hardening: Enforced strict image extension and MIME validation, randomized temporary file storage, and directory access controls on preview compression AJAX handler.
+* Security Hardening: Patched DOM-based XSS in upload interceptor batch carousel preview with secure DOM node creation.
+* Security Hardening: Added granular `delete_post` and `edit_post` capability checks to single-item Media Library AJAX handlers.
+* Security Hardening: Mitigated SSRF on external optimization downloads by enforcing host validation and safe transport options.
+* Functional Fixes: Resolved bulk sync infinite loop by tracking and excluding failed item IDs from subsequent sync queries.
+* Functional Fixes: Enhanced CDN URL rewriter and `srcset` generator to fully support custom directory structures (`wp_content`, `uploads_only`, `date_only`, `custom`) and preserve responsive image markup.
+* Stability: Added `mbstring` function guards with native WordPress text trimming fallback to prevent fatal errors on minimal PHP environments.
 
 = 1.0.23 =
 * Codebase Cleanup: Streamlined code comments across all PHP and JavaScript modules to ensure clean, professional, production-grade documentation.
@@ -103,3 +113,35 @@ Enterprise Cloudflare R2 sync with reSmush.it cloud API & Server GD/Imagick opti
 * Added non-blocking Plupload & REST API parameter passing to eliminate upload queue stalls.
 * Enhanced Cloudflare R2 SigV4 client by suppressing HTTP 100-continue header for robust PUT operations.
 * Improved custom CDN URL and responsive srcset rewriting for all upload directory structures.
+
+== Third-Party Services ==
+
+This plugin integrates with the following external third-party services:
+
+1. **Cloudflare R2 Object Storage**
+* Service: Cloudflare R2
+* Service URL: https://www.cloudflare.com/products/r2/
+* Privacy Policy: https://www.cloudflare.com/privacypolicy/
+* Terms of Service: https://www.cloudflare.com/website-terms/
+* Purpose: Stores and serves your offloaded WordPress media files via S3-compatible cloud object storage.
+
+2. **reSmush.it Image Optimization API (Optional Engine)**
+* Service: reSmush.it
+* Service URL: https://resmush.it/
+* Terms of Service: https://resmush.it/
+* Privacy Policy: https://resmush.it/
+* Purpose: When "reSmush.it Free API" is selected as the optimization engine, images are uploaded to the reSmush.it API endpoint (https://api.resmush.it/) to be compressed without consuming web hosting server CPU.
+* Data Transmitted: Only the image binary data is transmitted for optimization. No personal, sensitive, or user identifying information is ever sent.
+* Control: Users can select "Server: PHP GD / Imagick" or "Raw Offload" in the plugin settings at any time to process all images entirely on their local server without using any third-party optimization service.
+
+== Frequently Asked Questions ==
+
+= Does this plugin require AWS SDK? =
+No. R2 by Grisma features a pure PHP AWS SigV4 implementation with zero heavy AWS SDKs or vendor bloat, keeping your site fast and lightweight.
+
+= Are my credentials secure? =
+Yes. Cloudflare R2 secret access keys are encrypted with AES-256-CBC using WordPress security salts.
+
+= Does bulk sync delete local files? =
+No. Bulk sync never deletes local server copies automatically. Local copies can only be removed after verification via the explicit "Clean Verified Local Files" action.
+

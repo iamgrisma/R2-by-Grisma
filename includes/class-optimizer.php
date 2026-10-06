@@ -495,6 +495,16 @@ class R2G_Optimizer {
             return array('success' => false, 'status' => 'no_dest', 'message' => __('reSmush.it returned no optimized file.', 'r2-by-grisma'));
         }
 
+        // Validate reSmush.it destination domain to prevent SSRF
+        $parsed_dest = wp_parse_url($data['dest']);
+        if (empty($parsed_dest['host']) || !preg_match('/(^|\.)resmush\.it$/i', $parsed_dest['host'])) {
+            return array(
+                'success' => false,
+                'status'  => 'untrusted_host',
+                'message' => __('Untrusted file source returned by optimization API.', 'r2-by-grisma'),
+            );
+        }
+
         $new_bytes = '';
         $download_urls = array($data['dest']);
         if (strpos($data['dest'], 'http://') === 0) {
@@ -502,9 +512,10 @@ class R2G_Optimizer {
         }
         foreach ($download_urls as $dl_url) {
             $compressed_img = wp_remote_get($dl_url, array(
-                'timeout'    => 30,
-                'user-agent' => $user_agent,
-                'headers'    => array('Referer' => $site_url),
+                'timeout'            => 30,
+                'user-agent'         => $user_agent,
+                'reject_unsafe_urls' => true,
+                'headers'            => array('Referer' => $site_url),
             ));
             if (!is_wp_error($compressed_img) && (int) wp_remote_retrieve_response_code($compressed_img) === 200) {
                 $new_bytes = wp_remote_retrieve_body($compressed_img);
