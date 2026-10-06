@@ -56,9 +56,33 @@ class R2G_Updater {
 
         // Admin actions & AJAX
         if (is_admin()) {
+            add_action('load-update-core.php', array($this, 'on_force_check_page'));
+            add_action('load-plugins.php', array($this, 'on_plugins_page'));
             add_action('admin_init', array($this, 'handle_manual_check'));
             add_action('wp_ajax_r2g_check_updates', array($this, 'ajax_check_updates'));
             add_filter('plugin_auto_update_setting_html', array($this, 'filter_auto_update_html'), 10, 3);
+        }
+    }
+
+    /**
+     * Flush cache immediately when administrator clicks "Check Again" on update-core.php
+     */
+    public function on_force_check_page() {
+        if (!empty($_GET['force-check']) && current_user_can('update_plugins')) {
+            delete_transient(self::TRANSIENT_LATEST);
+            delete_transient(self::TRANSIENT_RELEASES);
+            $this->get_latest_release(true);
+            $this->get_all_releases(true);
+        }
+    }
+
+    /**
+     * Ensure fresh release info when administrator visits plugins list
+     */
+    public function on_plugins_page() {
+        $latest = get_transient(self::TRANSIENT_LATEST);
+        if ($latest === false && current_user_can('update_plugins')) {
+            $this->get_latest_release(true);
         }
     }
 
@@ -82,8 +106,25 @@ class R2G_Updater {
             return $transient;
         }
 
+        if (!isset($transient->response) || !is_array($transient->response)) {
+            $transient->response = array();
+        }
+        if (!isset($transient->no_update) || !is_array($transient->no_update)) {
+            $transient->no_update = array();
+        }
+        if (!isset($transient->checked) || !is_array($transient->checked)) {
+            $transient->checked = array();
+        }
+
         $plugin_file = $this->get_plugin_basename();
-        $latest = $this->get_latest_release();
+        $transient->checked[$plugin_file] = R2G_VERSION;
+
+        $force = false;
+        if (is_admin() && !empty($_GET['force-check'])) {
+            $force = true;
+        }
+
+        $latest = $this->get_latest_release($force);
 
         if (empty($latest) || empty($latest['version'])) {
             return $transient;
