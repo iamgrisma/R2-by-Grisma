@@ -72,12 +72,7 @@ class R2_By_Grisma {
         R2G_Media_Library::instance();
         R2G_Sync::instance();
         R2G_Admin::instance();
-
-        // GitHub Release Updater is disabled by default for WordPress.org Directory compliance.
-        // To enable standalone GitHub updates on non-repo installs, define R2G_ENABLE_GITHUB_UPDATER as true in wp-config.php.
-        if (defined('R2G_ENABLE_GITHUB_UPDATER') && R2G_ENABLE_GITHUB_UPDATER) {
-            R2G_Updater::instance();
-        }
+        R2G_Updater::instance();
 
         add_filter('plugin_action_links_' . plugin_basename(__FILE__), array($this, 'add_plugin_action_links'));
     }

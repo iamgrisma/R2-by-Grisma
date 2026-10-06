@@ -472,11 +472,7 @@ class R2G_Admin {
             return;
         }
 
-        $show_updates_tab = defined('R2G_ENABLE_GITHUB_UPDATER') && R2G_ENABLE_GITHUB_UPDATER;
-        $allowed_tabs = array('setup', 'settings', 'index');
-        if ($show_updates_tab) {
-            $allowed_tabs[] = 'updates';
-        }
+        $allowed_tabs = array('setup', 'settings', 'index', 'updates');
         $active_tab = isset($_GET['tab']) ? sanitize_text_field($_GET['tab']) : 'setup';
         if (!in_array($active_tab, $allowed_tabs, true)) {
             $active_tab = 'setup';
@@ -551,12 +547,10 @@ class R2G_Admin {
                     <svg class="r2g-tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/></svg>
                     <?php esc_html_e('Storage & Media Sync', 'r2-by-grisma'); ?>
                 </a>
-                <?php if ($show_updates_tab): ?>
                 <a href="<?php echo esc_url(add_query_arg('tab', 'updates')); ?>" class="nav-tab <?php echo $active_tab === 'updates' ? 'nav-tab-active' : ''; ?>">
                     <svg class="r2g-tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.2"/></svg>
                     <?php esc_html_e('Updates & Rollback', 'r2-by-grisma'); ?>
                 </a>
-                <?php endif; ?>
             </nav>
 
             <!-- TAB 1: SETUP & API KEYS -->
@@ -1049,7 +1043,7 @@ class R2G_Admin {
                 </div>
 
             <!-- TAB 4: UPDATES & ROLLBACK -->
-            <?php elseif ($active_tab === 'updates' && $show_updates_tab): ?>
+            <?php elseif ($active_tab === 'updates'): ?>
                 <?php
                 $updater     = R2G_Updater::instance();
                 $latest      = $updater->get_latest_release();
