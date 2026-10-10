@@ -156,6 +156,30 @@ class R2G_Updater {
             }
         }
 
+        // Also register under known folder keys so WordPress detects it regardless of directory casing/name
+        $alternate_keys = array(
+            'r2-by-grisma/r2-by-grisma.php',
+            'R2-by-Grisma/r2-by-grisma.php',
+            'r2-by-grisma-main/r2-by-grisma.php',
+        );
+        foreach ($alternate_keys as $alt_key) {
+            if ($alt_key !== $plugin_file && (isset($transient->checked[$alt_key]) || isset($transient->response[$alt_key]) || isset($transient->no_update[$alt_key]))) {
+                $alt_item = clone $item;
+                $alt_item->plugin = $alt_key;
+                if (version_compare(R2G_VERSION, $latest['version'], '<')) {
+                    $transient->response[$alt_key] = $alt_item;
+                    if (isset($transient->no_update[$alt_key])) {
+                        unset($transient->no_update[$alt_key]);
+                    }
+                } else {
+                    $transient->no_update[$alt_key] = $alt_item;
+                    if (isset($transient->response[$alt_key])) {
+                        unset($transient->response[$alt_key]);
+                    }
+                }
+            }
+        }
+
         return $transient;
     }
 
@@ -185,6 +209,10 @@ class R2G_Updater {
         ));
 
         if (is_wp_error($response) || wp_remote_retrieve_response_code($response) !== 200) {
+            $fallback = get_option('r2g_last_known_latest_release', null);
+            if (!empty($fallback) && is_array($fallback)) {
+                return $fallback;
+            }
             return null;
         }
 
@@ -232,6 +260,7 @@ class R2G_Updater {
 
         // Cache for 6 hours
         set_transient(self::TRANSIENT_LATEST, $result, 6 * HOUR_IN_SECONDS);
+        update_option('r2g_last_known_latest_release', $result, false);
 
         return $result;
     }
@@ -245,69 +274,89 @@ class R2G_Updater {
     public function get_all_releases($force = false) {
         if (!$force) {
             $cached = get_transient(self::TRANSIENT_RELEASES);
-            if ($cached !== false && is_array($cached)) {
+            if ($cached !== false && is_array($cached) && !empty($cached)) {
                 return $cached;
             }
         }
 
-        $url = sprintf('https://api.github.com/repos/%s/%s/releases?per_page=10', self::GITHUB_OWNER, self::GITHUB_REPO);
-
-        $response = wp_remote_get($url, array(
-            'timeout'   => 12,
-            'sslverify' => true,
-            'headers'   => array(
-                'Accept'     => 'application/vnd.github.v3+json',
-                'User-Agent' => 'R2-by-Grisma-WP/' . R2G_VERSION . '; ' . home_url(),
-            ),
-        ));
-
-        if (is_wp_error($response) || wp_remote_retrieve_response_code($response) !== 200) {
-            return array();
-        }
-
-        $body = wp_remote_retrieve_body($response);
-        $data = json_decode($body, true);
-
-        if (!is_array($data)) {
-            return array();
-        }
-
         $releases = array();
-        foreach ($data as $rel) {
-            if (empty($rel['tag_name'])) {
-                continue;
+        $page = 1;
+
+        do {
+            $url = sprintf('https://api.github.com/repos/%s/%s/releases?per_page=100&page=%d', self::GITHUB_OWNER, self::GITHUB_REPO, $page);
+
+            $response = wp_remote_get($url, array(
+                'timeout'   => 15,
+                'sslverify' => true,
+                'headers'   => array(
+                    'Accept'     => 'application/vnd.github.v3+json',
+                    'User-Agent' => 'R2-by-Grisma-WP/' . R2G_VERSION . '; ' . home_url(),
+                ),
+            ));
+
+            if (is_wp_error($response) || wp_remote_retrieve_response_code($response) !== 200) {
+                break;
             }
 
-            $tag = ltrim($rel['tag_name'], 'vV');
-            $package_url = sprintf('https://github.com/%s/%s/releases/download/%s/r2-by-grisma.zip', self::GITHUB_OWNER, self::GITHUB_REPO, $rel['tag_name']);
+            $body = wp_remote_retrieve_body($response);
+            $data = json_decode($body, true);
 
-            if (!empty($rel['assets']) && is_array($rel['assets'])) {
-                foreach ($rel['assets'] as $asset) {
-                    if (isset($asset['name']) && strpos(strtolower($asset['name']), 'r2-by-grisma') !== false && substr($asset['name'], -4) === '.zip') {
-                        $package_url = $asset['browser_download_url'];
-                        break;
+            if (!is_array($data) || empty($data)) {
+                break;
+            }
+
+            foreach ($data as $rel) {
+                if (empty($rel['tag_name']) || !empty($rel['draft'])) {
+                    continue;
+                }
+
+                $tag = ltrim($rel['tag_name'], 'vV');
+                $package_url = sprintf('https://github.com/%s/%s/releases/download/%s/r2-by-grisma.zip', self::GITHUB_OWNER, self::GITHUB_REPO, $rel['tag_name']);
+
+                if (!empty($rel['assets']) && is_array($rel['assets'])) {
+                    foreach ($rel['assets'] as $asset) {
+                        if (isset($asset['name']) && strpos(strtolower($asset['name']), 'r2-by-grisma') !== false && substr($asset['name'], -4) === '.zip') {
+                            $package_url = $asset['browser_download_url'];
+                            break;
+                        }
                     }
                 }
-            }
-            if (empty($package_url)) {
-                $package_url = $rel['zipball_url'] ?? '';
+                if (empty($package_url)) {
+                    $package_url = $rel['zipball_url'] ?? '';
+                }
+
+                $releases[] = array(
+                    'version'     => $tag,
+                    'tag_name'    => $rel['tag_name'],
+                    'url'         => $rel['html_url'] ?? sprintf('https://github.com/%s/%s', self::GITHUB_OWNER, self::GITHUB_REPO),
+                    'package'     => $package_url,
+                    'published'   => $rel['published_at'] ?? '',
+                    'changelog'   => $rel['body'] ?? '',
+                    'author'      => $rel['author']['login'] ?? 'iamgrisma',
+                    'prerelease'  => !empty($rel['prerelease']),
+                );
             }
 
-            $releases[] = array(
-                'version'     => $tag,
-                'tag_name'    => $rel['tag_name'],
-                'url'         => $rel['html_url'] ?? '',
-                'package'     => $package_url,
-                'published'   => $rel['published_at'] ?? '',
-                'changelog'   => $rel['body'] ?? '',
-                'prerelease'  => !empty($rel['prerelease']),
-            );
+            if (count($data) < 100) {
+                break;
+            }
+            $page++;
+        } while ($page <= 5);
+
+        if (!empty($releases)) {
+            // Cache for 6 hours
+            set_transient(self::TRANSIENT_RELEASES, $releases, 6 * HOUR_IN_SECONDS);
+            update_option('r2g_last_known_releases', $releases, false);
+            return $releases;
         }
 
-        // Cache for 6 hours
-        set_transient(self::TRANSIENT_RELEASES, $releases, 6 * HOUR_IN_SECONDS);
+        // Fallback to persisted releases if GitHub API was rate-limited or unreachable
+        $fallback = get_option('r2g_last_known_releases', array());
+        if (!empty($fallback) && is_array($fallback)) {
+            return $fallback;
+        }
 
-        return $releases;
+        return array();
     }
 
     /**
@@ -365,7 +414,7 @@ class R2G_Updater {
 
         // Verify this update is for our plugin
         $is_target = false;
-        if (!empty($hook_extra['plugin']) && strpos($hook_extra['plugin'], self::PLUGIN_SLUG) !== false) {
+        if (!empty($hook_extra['plugin']) && stripos($hook_extra['plugin'], self::PLUGIN_SLUG) !== false) {
             $is_target = true;
         }
 
