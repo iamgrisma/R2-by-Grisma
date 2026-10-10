@@ -137,7 +137,7 @@ class R2G_Updater {
         $item->new_version  = $latest['version'];
         $item->url          = $latest['url'];
         $item->package      = $latest['package'];
-        $item->tested       = '6.7';
+        $item->tested       = '6.8';
         $item->requires     = '5.8';
         $item->requires_php = '7.4';
         $item->icons        = array();

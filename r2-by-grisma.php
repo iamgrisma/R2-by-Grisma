@@ -3,7 +3,7 @@
  * Plugin Name: R2 by Grisma
  * Plugin URI: https://grisma.com.np
  * Description: Enterprise Cloudflare R2 sync with reSmush.it cloud API & Server GD/Imagick optimization, on-site WebP conversion, custom CDN delivery, and zero vendor bloat.
- * Version: 1.0.27
+ * Version: 2.0.0
  * Author: Grisma
  * Author URI: https://grisma.com.np
  * License: GPL v2 or later
@@ -18,7 +18,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('R2G_VERSION', '1.0.27');
+define('R2G_VERSION', '2.0.0');
 define('R2G_FILE', __FILE__);
 define('R2G_PATH', plugin_dir_path(__FILE__));
 define('R2G_URL', plugin_dir_url(__FILE__));
@@ -66,6 +66,7 @@ class R2_By_Grisma {
         add_action('admin_init', array($this, 'maybe_migrate_postmeta'));
         add_action('admin_init', array($this, 'maybe_migrate_v109'));
         add_action('admin_init', array($this, 'maybe_migrate_v122'));
+        add_action('admin_init', array($this, 'maybe_migrate_v200'));
 
         R2G_Media_Handler::instance();
         R2G_URL_Rewriter::instance();
@@ -117,6 +118,44 @@ class R2_By_Grisma {
                 update_option('r2g_interceptor_enabled', 0);
             }
             update_option('r2g_v122_migrated', 1);
+        }
+    }
+
+    /**
+     * Migrate and normalize options for v2.0.0
+     */
+    public function maybe_migrate_v200() {
+        if (!get_option('r2g_v200_migrated')) {
+            $engine = get_option('r2g_compress_engine');
+            if ($engine === false || $engine === 'browser' || empty($engine)) {
+                update_option('r2g_compress_engine', 'resmush');
+            }
+            $storage = get_option('r2g_storage_mode');
+            if (!in_array($storage, array('both', 'r2_only', 'local_only'), true)) {
+                update_option('r2g_storage_mode', 'both');
+            }
+            if (get_option('r2g_path_structure') === false) {
+                update_option('r2g_path_structure', 'wp_content');
+            }
+            if (get_option('r2g_upload_sizes') === false) {
+                update_option('r2g_upload_sizes', 'all');
+            }
+            if (get_option('r2g_cleanup_scope') === false) {
+                update_option('r2g_cleanup_scope', 'all');
+            }
+            if (get_option('r2g_auto_upload') === false) {
+                update_option('r2g_auto_upload', 1);
+            }
+            if (get_option('r2g_rewrite_urls') === false) {
+                update_option('r2g_rewrite_urls', 1);
+            }
+            if (get_option('r2g_delete_from_r2') === false) {
+                update_option('r2g_delete_from_r2', 1);
+            }
+            if (class_exists('R2G_Encryption')) {
+                R2G_Encryption::maybe_upgrade_option('r2g_secret_key');
+            }
+            update_option('r2g_v200_migrated', 1);
         }
     }
 
@@ -207,6 +246,15 @@ register_activation_hook(__FILE__, function() {
     }
     if (get_option('r2g_interceptor_enabled') === false) {
         add_option('r2g_interceptor_enabled', 0);
+    }
+    if (!get_option('r2g_path_structure')) {
+        add_option('r2g_path_structure', 'wp_content');
+    }
+    if (!get_option('r2g_upload_sizes')) {
+        add_option('r2g_upload_sizes', 'all');
+    }
+    if (!get_option('r2g_cleanup_scope')) {
+        add_option('r2g_cleanup_scope', 'all');
     }
     if (get_option('r2g_auto_upload') === false) {
         add_option('r2g_auto_upload', 1);

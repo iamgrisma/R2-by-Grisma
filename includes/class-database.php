@@ -27,7 +27,7 @@ class R2G_Database {
     /**
      * Current DB schema version
      */
-    const DB_VERSION = '1.0.1';
+    const DB_VERSION = '2.0.0';
 
     public static function instance() {
         if (is_null(self::$instance)) {
@@ -76,7 +76,7 @@ class R2G_Database {
             synced_at DATETIME DEFAULT NULL,
             created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-            PRIMARY KEY (id),
+            PRIMARY KEY  (id),
             UNIQUE KEY attachment_id (attachment_id),
             KEY status (status),
             KEY r2_key (r2_key(191))

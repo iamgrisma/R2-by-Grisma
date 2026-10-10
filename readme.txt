@@ -2,9 +2,9 @@
 Contributors: grisma
 Tags: r2, cloudflare, cloudflare r2, image optimization, webp, s3, offload media
 Requires at least: 5.8
-Tested up to: 6.7
+Tested up to: 6.8
 Requires PHP: 7.4
-Stable tag: 1.0.27
+Stable tag: 2.0.0
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -32,6 +32,16 @@ Enterprise Cloudflare R2 sync with reSmush.it cloud API & Server GD/Imagick opti
 4. Click **Test Connection & Verify CDN** to confirm connection.
 
 == Changelog ==
+
+= 2.0.0 =
+* Major Release: Milestone release delivering enterprise Cloudflare R2 object storage, robust background sync, intelligent image optimization, and hardened security.
+* Optimization Pipeline: Dual optimization architecture featuring reSmush.it cloud compression API as primary offload engine with seamless GD / Imagick local fallback.
+* Format Conversion: On-the-fly raster conversion to modern lightweight WebP with full responsive srcset and headless REST API URL rewriting parity.
+* Multi-Release Discovery & Rollback: Expanded GitHub Release history indexing to 100+ releases per page with persistent rate-limit fallbacks and seamless directory alias resolution.
+* Data Integrity & Database Index: Bumped local sync index schema to v2.0.0, ensuring zero-cost R2 Class B listing operations with strict dbDelta compliance.
+* Automatic v2.0.0 Migration: Automatic normalization of all legacy options, storage policies, upload presets, and authenticated credential encryption.
+* Lifecycle & Cleanup: Hardened uninstall procedures for multisite networks, removing options, transients, and custom tables cleanly when configured.
+* WordPress Compatibility: Verified and tested up to WordPress 6.8 with PHP 8.0, 8.1, 8.2, and 8.3 support.
 
 = 1.0.27 =
 * Update Pipeline: Immediate GitHub release discovery on `update-core.php` force checks (`?force-check=1`).

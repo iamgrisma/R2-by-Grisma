@@ -46,7 +46,9 @@ function r2g_uninstall_site() {
         'r2g_db_version',
         'r2g_v109_migrated',
         'r2g_v122_migrated',
+        'r2g_v200_migrated',
         'r2g_postmeta_migrated',
+        'r2g_last_known_releases',
         'r2g_delete_data_on_uninstall',
     );
 
